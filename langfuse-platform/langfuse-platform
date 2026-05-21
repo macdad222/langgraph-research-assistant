@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$HOME/dev/langfuse-platform"
+case "${1:-}" in
+  start) docker-compose up -d ;;
+  stop) docker-compose down ;;
+  restart) docker-compose restart ;;
+  logs) docker-compose logs -f "${2:-langfuse-web}" ;;
+  status) docker-compose ps ;;
+  health) curl -sS http://localhost:3001/api/public/health || curl -sS http://localhost:3001 ; echo ;;
+  creds) cat "$HOME/langfuse-credentials.txt" ;;
+  *) echo "Usage: langfuse-platform <start|stop|restart|logs [service]|status|health|creds>" ; exit 2 ;;
+esac

@@ -1,0 +1,489 @@
+# AI Agent Platform Reference
+
+Last updated: 2026-05-21
+
+This document captures the current local agent platform running on `localhost`.
+
+## What Exists Now
+
+The platform is a local agent stack for structured research and experimentation with LangGraph-based workflows. It includes:
+
+- A FastAPI + LangGraph application container.
+- LiteLLM model access to the Linux vLLM server.
+- Redis-backed LangGraph checkpoints.
+- Langfuse tracing.
+- A web-based Research Assistant frontend.
+- File-backed research run persistence in `/data/research-runs`.
+- Neo4j research memory for prior runs, sources, claims, reviews, policy reports, and follow-up chains.
+- Human-in-the-loop review controls, including true LangGraph `interrupt()` / `Command(resume=...)` flow.
+
+## High-Level Architecture
+
+```text
+Browser / API Client
+  |
+  | http://localhost:8080
+  v
+Research Assistant Frontend
+  |
+  | http://localhost:8001
+  v
+FastAPI + LangGraph App
+  |-- Redis checkpoints
+  |-- JSON run archive: /data/research-runs
+  |-- Neo4j research memory
+  |-- Langfuse tracing callback
+  |
+  | OpenAI-compatible API
+  v
+LiteLLM Proxy on your-vllm-host.example:4010
+  |
+  | hosted_vllm / OpenAI-compatible API
+  v
+vLLM Inference Server on your-vllm-host.example:8000
+```
+
+## Hosts And URLs
+
+| Service | URL | Notes |
+| --- | --- | --- |
+| Research Assistant UI | `http://localhost:8080` | Main end-user frontend |
+| Agent API health | `http://localhost:8001/health` | FastAPI health check |
+| Chat graph visualizer | `http://localhost:8001/graph` | Browser-rendered Mermaid graph |
+| Chat graph Mermaid | `http://localhost:8001/graph/mermaid` | Raw Mermaid graph text |
+| Research graph Mermaid | `http://localhost:8001/research/graph/mermaid` | Raw research graph text |
+| Neo4j Browser | `http://localhost:7474` | Research memory graph UI |
+| Neo4j Bolt | `bolt://localhost:7687` | Driver connection from host/LAN |
+| Langfuse UI | `http://localhost:3001` | Observability and traces |
+| LiteLLM API | `http://your-vllm-host.example:4010/v1` | Current LangGraph model gateway |
+| LiteLLM UI | `http://your-vllm-host.example:4010/ui` | Linux LiteLLM management UI, if enabled |
+| vLLM API | `http://your-vllm-host.example:8000/v1` | Dedicated inference server |
+
+## Project Locations
+
+| Path | Purpose |
+| --- | --- |
+| `~/dev/agent-platform` | LangGraph app, Dockerfile, Compose file, docs, frontend |
+| `~/dev/agent-platform/frontend` | Static research frontend container |
+| `~/dev/agent-platform/data/research-runs` | JSON archive of saved research runs |
+| `~/dev/langfuse-platform` | Langfuse self-hosted Compose stack |
+| `~/local-litellm-linux-test` | Linux LiteLLM + Postgres setup on `your-vllm-host.example` |
+| `~/agent-platform` | Helper script symlink, if present |
+| `~/langfuse-platform` | Langfuse helper script symlink, if present |
+| `~/langfuse-credentials.txt` | Local Langfuse credentials, mode `600` |
+
+## Containers
+
+Core agent stack in `~/dev/agent-platform`:
+
+| Container | Purpose | Ports |
+| --- | --- | --- |
+| `langgraph-app` | FastAPI + LangGraph agent service | `8001` |
+| `langgraph-redis` | Redis Stack for LangGraph checkpoints | `6379` |
+| `research-neo4j` | Neo4j research memory graph | `7474`, `7687` |
+| `research-frontend` | Static web UI for the Research Assistant | `8080` |
+
+Langfuse stack in `~/dev/langfuse-platform`:
+
+| Container | Purpose | Port |
+| --- | --- | --- |
+| `langfuse-platform-langfuse-web-1` | Langfuse web UI/API | `3001` -> container `3000` |
+| `langfuse-platform-langfuse-worker-1` | Langfuse background worker | internal |
+| `langfuse-platform-postgres-1` | Langfuse transactional DB | internal |
+| `langfuse-platform-clickhouse-1` | Langfuse analytics/traces DB | internal |
+| `langfuse-platform-minio-1` | Object storage for Langfuse | `9090` |
+| `langfuse-platform-redis-1` | Queue/cache for Langfuse | internal |
+
+Linux LiteLLM stack on `your-vllm-host.example`:
+
+| Container | Purpose | Port |
+| --- | --- | --- |
+| `litellm-linux-test` | LiteLLM proxy + UI | `4010` |
+| `litellm-db` | Postgres database for LiteLLM | internal |
+
+## Environment Variables
+
+The agent app reads `~/dev/agent-platform/.env`.
+
+Important variables:
+
+```text
+LITELLM_BASE_URL=http://your-vllm-host.example:4010/v1
+LITELLM_API_KEY=<LiteLLM key>
+MODEL_NAME=gemma-local
+LANGFUSE_PUBLIC_KEY=<Langfuse public key>
+LANGFUSE_SECRET_KEY=<Langfuse secret key>
+LANGFUSE_BASE_URL=http://host.docker.internal:3001
+TAVILY_API_KEY=<optional Tavily key>
+NEO4J_URI=bolt://neo4j:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=change-me-neo4j-password
+```
+
+Do not paste active API keys into docs or chat. `.env.example` contains placeholders/default local development values only.
+
+## Credentials And Login
+
+Langfuse credentials are stored on `omlx` in:
+
+```bash
+~/langfuse-credentials.txt
+```
+
+Use:
+
+```bash
+~/langfuse-platform creds
+```
+
+Neo4j local development login:
+
+```text
+URL: http://localhost:7474
+Username: neo4j
+Password: change-me-neo4j-password
+```
+
+LiteLLM UI credentials live with the Linux LiteLLM setup on `your-vllm-host.example`, in the local LiteLLM project files created there. Do not paste the LiteLLM master key into docs or logs.
+
+## Model Routing
+
+The LangGraph app calls LiteLLM using:
+
+```text
+base_url: http://your-vllm-host.example:4010/v1
+model: gemma-local
+```
+
+LiteLLM routes `gemma-local` to the Linux vLLM server:
+
+```text
+api_base: http://your-vllm-host:8000/v1
+```
+
+The vLLM server exposes a Gemma 31B model through an OpenAI-compatible API.
+
+## LangGraph Workflows
+
+### Chat Graph
+
+Simple checkpointed chat endpoint:
+
+```text
+POST /chat
+```
+
+Shape:
+
+```text
+messages -> model node -> response
+```
+
+Redis checkpointing lets callers reuse `thread_id` to continue conversation memory.
+
+### Structured Research Graph
+
+Main non-interactive research path:
+
+```text
+retrieve_memory
+  -> plan_research
+  -> search_sources
+  -> read_sources
+  -> score_sources
+  -> synthesize_research
+  -> analyze_gaps
+  -> optional deepening pass
+  -> critique_research
+  -> revise_final_answer
+  -> check_policy
+  -> optional policy repair pass
+  -> verify_citations
+  -> END
+```
+
+Key behaviors:
+
+- `retrieve_memory` queries Neo4j before planning.
+- `plan_research` receives prior related runs, claims, and trusted/repeated sources as context.
+- Search uses Tavily if `TAVILY_API_KEY` is set, with DuckDuckGo HTML fallback.
+- Source pages are fetched and cleaned with `httpx` + BeautifulSoup.
+- Sources are scored for authority, relevance, risk, and score.
+- The model returns structured findings, citations, confidence, limitations, and follow-up questions.
+- A critic node produces a quality report.
+- A policy node flags citation count, weak citations, unsupported claims, low diversity, and incomplete deepening.
+- Deep/comparison runs can perform a bounded policy repair loop.
+
+### Interactive Human Review Graph
+
+Interactive path:
+
+```text
+POST /research/interactive
+```
+
+The graph executes until the `human_review_checkpoint` node, then uses LangGraph `interrupt()` to pause.
+
+Resume path:
+
+```text
+POST /research/interactive/{thread_id}/review
+```
+
+Resume uses `Command(resume=...)` with a human decision:
+
+```json
+{
+  "decision": "approved",
+  "reviewer_notes": "Looks good.",
+  "selected_issues": []
+}
+```
+
+Decisions:
+
+- `approved`: resumes to citation verification/finalization.
+- `needs_work`: routes into one more repair pass before finalization.
+
+## Research Assistant Frontend
+
+Open:
+
+```text
+http://localhost:8080
+```
+
+The frontend supports:
+
+- Standard structured research runs.
+- Interactive review runs using true LangGraph pause/resume.
+- Human review on saved runs.
+- Follow-up pass from human-selected issues.
+- Copy Markdown.
+- Recent saved runs.
+- Policy report and quality report cards.
+- Citation verification cards.
+- Source quality views.
+- Execution trace view.
+- Neo4j memory panel with health, search, current-run memory, backlog, dedup, and audit.
+
+## Persistence And Memory
+
+### Redis
+
+Redis is used for LangGraph checkpointing:
+
+- `/chat` conversation state.
+- `/research` graph checkpoints.
+- `/research/interactive` interrupt/resume checkpoints.
+
+### JSON Run Archive
+
+Every completed research run is saved as JSON in:
+
+```text
+/data/research-runs
+```
+
+This remains the fallback source of record.
+
+### Neo4j Research Memory
+
+Neo4j is used as a queryable graph memory layer. Writes are best-effort: if Neo4j is unavailable, research still completes and saves JSON.
+
+Graph shape:
+
+```text
+(:ResearchRun)-[:ANSWERED]->(:Question)
+(:ResearchRun)-[:USED_SOURCE]->(:Source)
+(:ResearchRun)-[:MADE_CLAIM]->(:Claim)
+(:Claim)-[:CITED]->(:Source)
+(:ResearchRun)-[:HAS_REVIEW]->(:HumanReview)
+(:ResearchRun)-[:HAS_POLICY]->(:PolicyReport)
+(:ResearchRun)-[:HAS_QUALITY]->(:QualityReport)
+(:ResearchRun)-[:FOLLOWED_BY]->(:ResearchRun)
+```
+
+Neo4j supports:
+
+- Retrieval before web search.
+- Research backlog: weak citations, unsupported claims, missing perspectives, policy warnings, `needs_work` reviews.
+- Human review audit graph.
+- Cross-run source/claim deduplication.
+- Source-to-run lookup.
+- Follow-up chain lookup.
+
+## API Endpoints
+
+### Platform
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | App health and model name |
+| `GET` | `/graph` | Chat graph visualizer |
+| `GET` | `/graph/mermaid` | Chat graph Mermaid source |
+| `GET` | `/research/graph/mermaid` | Research graph Mermaid source |
+
+### Chat
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/chat` | Checkpointed chat |
+
+Example:
+
+```bash
+curl -sS http://localhost:8001/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"thread_id":"demo","message":"Say hello from LangGraph."}'
+```
+
+### Research
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/research` | Run structured research to completion |
+| `GET` | `/research/runs` | List saved research runs |
+| `GET` | `/research/runs/{run_id}` | Load saved research run |
+| `POST` | `/research/runs/{run_id}/review` | Save human review decision |
+| `POST` | `/research/runs/{run_id}/follow-up` | Run one more targeted follow-up pass |
+| `POST` | `/research/interactive` | Start interactive run and pause at human review |
+| `POST` | `/research/interactive/{thread_id}/review` | Resume paused interactive run |
+
+Example:
+
+```bash
+curl -sS http://localhost:8001/research \
+  -H 'Content-Type: application/json' \
+  -d '{"thread_id":"research-demo","mode":"quick","question":"What is LangGraph interrupt/resume useful for?","constraints":"Prefer official docs."}'
+```
+
+### Neo4j Memory
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/memory/health` | Neo4j memory health |
+| `GET` | `/memory/research/search?q=...` | Search prior research runs |
+| `GET` | `/memory/research/runs/{run_id}` | Current graph memory for a run |
+| `GET` | `/memory/research/runs/{run_id}/audit` | Human review, policy, quality, parent/follow-up audit |
+| `GET` | `/memory/research/sources/{source_hash}/runs` | Runs that used the source |
+| `GET` | `/memory/research/backlog` | Unresolved research issues |
+| `GET` | `/memory/research/dedup?q=...` | Repeated claims and repeated sources |
+
+Examples:
+
+```bash
+curl -sS http://localhost:8001/memory/health
+curl -sS 'http://localhost:8001/memory/research/search?q=human&limit=5'
+curl -sS 'http://localhost:8001/memory/research/backlog?limit=10'
+```
+
+## Useful Cypher Queries
+
+Runs and sources:
+
+```cypher
+MATCH (r:ResearchRun)-[:USED_SOURCE]->(s:Source)
+RETURN r.run_id, r.question, s.title, s.host
+LIMIT 25;
+```
+
+Follow-up chains:
+
+```cypher
+MATCH (r:ResearchRun)-[:FOLLOWED_BY]->(f:ResearchRun)
+RETURN r.run_id, r.question, f.run_id, f.question
+LIMIT 25;
+```
+
+Repeated sources:
+
+```cypher
+MATCH (r:ResearchRun)-[:USED_SOURCE]->(s:Source)
+WITH s, count(DISTINCT r) AS runs
+WHERE runs > 1
+RETURN s.host, s.url, runs
+ORDER BY runs DESC
+LIMIT 25;
+```
+
+Backlog:
+
+```cypher
+MATCH (r:ResearchRun)-[:HAS_POLICY]->(p:PolicyReport)
+OPTIONAL MATCH (r)-[:HAS_QUALITY]->(q:QualityReport)
+WHERE p.warning_count > 0
+   OR p.blocking_issue_count > 0
+   OR q.weak_citation_count > 0
+   OR q.missing_perspective_count > 0
+RETURN r.run_id, r.question, p.warning_count, p.blocking_issue_count,
+       q.weak_citation_count, q.missing_perspective_count
+ORDER BY r.created_at DESC
+LIMIT 25;
+```
+
+## Helper Commands
+
+Agent platform:
+
+```bash
+cd ~/dev/agent-platform
+docker-compose ps
+docker-compose logs -f langgraph-app
+docker-compose up -d --build
+```
+
+If helper symlinks are present:
+
+```bash
+~/agent-platform status
+~/agent-platform health
+~/agent-platform frontend
+~/agent-platform open
+~/agent-platform graph
+~/agent-platform research "What should we research next?"
+~/agent-platform logs
+~/agent-platform rebuild
+```
+
+Langfuse:
+
+```bash
+~/langfuse-platform status
+~/langfuse-platform health
+~/langfuse-platform logs
+~/langfuse-platform creds
+```
+
+## Verified Behavior
+
+Verified behavior as of this update:
+
+- FastAPI health returns `ok` and model `gemma-local`.
+- Research UI is available on port `8080`.
+- LangGraph app calls LiteLLM on `your-vllm-host.example:4010/v1`.
+- Langfuse traces are enabled.
+- Redis checkpointing supports chat and interactive graph state.
+- Interactive research pauses at `human_review_checkpoint` and resumes with `Command(resume=...)`.
+- Neo4j memory is connected and receives research run writes.
+- Memory retrieval runs before research planning.
+- Backlog, dedup, audit, source lookup, and memory search endpoints work.
+
+## Operational Notes And Caveats
+
+- Docker Desktop on macOS may block image pulls over non-interactive SSH because the keychain is locked. If a new public image cannot be pulled, pull it from an interactive terminal on `omlx` or use the existing manual image-load workaround.
+- Neo4j memory writes are intentionally best-effort while JSON remains the fallback archive.
+- Tavily is preferred for search when configured; DuckDuckGo HTML is a fallback and can be less reliable.
+- The system is still local-dev oriented. Auth, user roles, and multi-user approval attribution are future work.
+- OPA is not wired yet. Policy checks are currently deterministic Python checks inside the research graph.
+
+## Good Next Steps
+
+High-value next upgrades:
+
+- Backfill all existing JSON research runs into Neo4j, not just new runs.
+- Add source reputation scoring over time.
+- Add stale-source detection and recency checks.
+- Add user identity/roles for human review approvals.
+- Add OPA as an external policy gate once policy requirements stabilize.
+- Add richer graph visualizations for Neo4j memory paths inside the frontend.

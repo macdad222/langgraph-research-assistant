@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$HOME/dev/agent-platform"
+cd "$PROJECT_DIR"
+
+usage() {
+  cat <<USAGE
+Usage: agent-platform <command>
+
+Commands:
+  start      Start the LangGraph stack
+  stop       Stop the LangGraph stack
+  restart    Restart the LangGraph stack
+  rebuild    Rebuild and restart the LangGraph stack
+  status     Show LangGraph/LiteLLM container status
+  logs       Tail LangGraph app logs
+  health     Check the LangGraph health endpoint
+  graph      Print the Mermaid graph source
+  open       Print browser URLs for the agent UI endpoints
+  frontend   Check the research frontend health endpoint
+  research QUESTION  Run a structured research request
+  chat TEXT         Send a quick test message to LangGraph
+  thread ID TEXT    Send a message using a checkpointed thread id
+USAGE
+}
+
+command="${1:-}"
+case "$command" in
+  start)
+    docker-compose up -d
+    ;;
+  stop)
+    docker-compose down
+    ;;
+  restart)
+    docker-compose restart
+    ;;
+  rebuild)
+    docker-compose up -d --build
+    ;;
+  status)
+    docker ps --filter name=langgraph --filter name=litellm --filter name=research-frontend --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    ;;
+  logs)
+    docker logs -f langgraph-app
+    ;;
+  health)
+    curl -sS http://localhost:8001/health
+    echo
+    ;;
+  graph)
+    curl -sS http://localhost:8001/graph/mermaid
+    echo
+    ;;
+  frontend)
+    curl -sS http://localhost:8080/health
+    echo
+    ;;
+  open)
+    cat <<URLS
+Research UI:    http://localhost:8080
+Graph UI:       http://localhost:8001/graph
+Mermaid source: http://localhost:8001/graph/mermaid
+Research graph: http://localhost:8001/research/graph/mermaid
+Health:         http://localhost:8001/health
+Langfuse:       http://localhost:3001
+URLS
+    ;;
+  chat)
+    shift || true
+    message="${*:-Say hello from LangGraph.}"
+    python3 - "$message" <<"PY"
+import json
+import sys
+import urllib.request
+
+message = sys.argv[1]
+payload = json.dumps({"message": message}).encode()
+req = urllib.request.Request(
+    "http://localhost:8001/chat",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=60) as response:
+    print(response.read().decode())
+PY
+    ;;
+  research)
+    shift || true
+    question="${*:-What should we research next?}"
+    python3 - "$question" <<"PY"
+import json
+import sys
+import urllib.request
+
+question = sys.argv[1]
+payload = json.dumps({
+    "thread_id": "cli-research",
+    "mode": "quick",
+    "question": question,
+    "constraints": "Use the current local agent platform context.",
+}).encode()
+req = urllib.request.Request(
+    "http://localhost:8001/research",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=120) as response:
+    print(response.read().decode())
+PY
+    ;;
+  thread)
+    shift || true
+    thread_id="${1:-}"
+    shift || true
+    message="${*:-Say hello from this checkpointed thread.}"
+    if [ -z "$thread_id" ]; then
+      echo "Missing thread id" >&2
+      usage >&2
+      exit 2
+    fi
+    python3 - "$thread_id" "$message" <<"PY"
+import json
+import sys
+import urllib.request
+
+thread_id, message = sys.argv[1], sys.argv[2]
+payload = json.dumps({"thread_id": thread_id, "message": message}).encode()
+req = urllib.request.Request(
+    "http://localhost:8001/chat",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=60) as response:
+    print(response.read().decode())
+PY
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

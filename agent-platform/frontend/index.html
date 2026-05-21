@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Research Assistant</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-soft: rgba(15, 23, 42, 0.72);
+      --panel-strong: rgba(15, 23, 42, 0.96);
+      --line: #334155;
+      --line-soft: rgba(148, 163, 184, 0.2);
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #93c5fd;
+      --accent-strong: #60a5fa;
+      --danger: #f87171;
+      --warn: #fbbf24;
+      --ok: #86efac;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #1e293b 0, var(--bg) 42%);
+      color: var(--text);
+    }
+    header {
+      padding: 22px 32px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.92);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      backdrop-filter: blur(12px);
+    }
+    header > * { max-width: 1760px; margin-left: auto; margin-right: auto; }
+    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.02em; }
+    h2 { margin-top: 0; letter-spacing: -0.01em; }
+    h3 { margin: 22px 0 10px; }
+    h4 { margin: 0 0 10px; font-size: 15px; color: #cbd5e1; text-transform: uppercase; letter-spacing: 0.06em; }
+    .subtitle { color: var(--muted); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(320px, 400px) minmax(720px, 1fr) minmax(300px, 340px);
+      gap: 20px;
+      padding: 24px 32px 40px;
+      width: min(100%, 1820px);
+      margin: 0 auto;
+    }
+    .card {
+      border: 1px solid var(--line-soft);
+      background: var(--panel-strong);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+    }
+    .input-panel, .side-panel { align-self: start; position: sticky; top: 92px; }
+    .brief-panel { min-height: calc(100vh - 138px); }
+    .brief-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    label { display: block; margin-bottom: 8px; color: #cbd5e1; font-weight: 600; }
+    textarea, input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      color: var(--text);
+      background: #020617;
+      font: inherit;
+    }
+    textarea { min-height: 190px; resize: vertical; }
+    .field { margin-bottom: 16px; }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: #06121f;
+      background: var(--accent);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary { background: #1f2937; color: var(--text); border: 1px solid var(--line); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row > * { flex: 1; }
+    .status { margin-top: 14px; color: var(--muted); font-size: 14px; }
+    .answer { white-space: normal; line-height: 1.65; font-size: 16px; }
+    .answer-lede { font-size: 18px; line-height: 1.75; color: #f8fafc; margin: 0; }
+    .prose { color: #e2e8f0; line-height: 1.72; }
+    .prose h2 { margin: 26px 0 10px; font-size: 22px; border-bottom: 1px solid var(--line-soft); padding-bottom: 8px; }
+    .prose h3 { margin: 22px 0 8px; font-size: 18px; color: #dbeafe; }
+    .prose p { margin: 10px 0; }
+    .prose strong { color: #f8fafc; }
+    .prose ul, .prose ol { margin: 10px 0 14px; }
+    .prose li { margin: 8px 0; }
+    .prose code { background: rgba(2, 6, 23, 0.8); border: 1px solid var(--line-soft); border-radius: 6px; padding: 1px 5px; }
+    .section-footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 13px; }
+    .empty { color: var(--muted); }
+    .error { color: var(--danger); }
+    .pill {
+      display: inline-flex;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 6px 8px 0;
+      background: #020617;
+    }
+    .pill.ok { color: var(--ok); border-color: rgba(134, 239, 172, 0.35); }
+    .pill.bad { color: var(--danger); border-color: rgba(248, 113, 113, 0.38); }
+    .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.38); }
+    ul { padding-left: 20px; line-height: 1.55; }
+    li { margin: 7px 0; }
+    .links a { display: block; color: var(--accent); text-decoration: none; margin: 8px 0; }
+    .links a:hover { text-decoration: underline; }
+    pre {
+      overflow: auto;
+      max-height: 340px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #020617;
+      color: #cbd5e1;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; vertical-align: top; padding: 10px; border-bottom: 1px solid var(--line-soft); }
+    th { color: #cbd5e1; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    details { border: 1px solid var(--line-soft); border-radius: 14px; padding: 12px 14px; background: rgba(2, 6, 23, 0.35); margin: 14px 0; }
+    summary { cursor: pointer; color: #dbeafe; font-weight: 700; }
+    .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .metric-card { border: 1px solid var(--line-soft); background: linear-gradient(180deg, rgba(30, 41, 59, 0.86), rgba(15, 23, 42, 0.86)); border-radius: 16px; padding: 14px; min-height: 92px; }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { display: block; margin-top: 8px; font-size: 22px; font-weight: 800; color: #f8fafc; }
+    .metric-note { display: block; margin-top: 4px; color: var(--muted); font-size: 13px; }
+    .section-card { border: 1px solid var(--line-soft); background: var(--panel-soft); border-radius: 18px; padding: 18px; margin: 16px 0; }
+    .section-card.primary { background: linear-gradient(135deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.94)); border-color: rgba(147, 197, 253, 0.28); }
+    .section-card.compact { padding: 14px 16px; }
+    .section-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .section-grid .section-card { margin: 0; }
+    .muted-line { color: var(--muted); font-size: 14px; }
+    .review-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .review-actions button { flex: 0 0 auto; }
+    .review-notes { min-height: 92px; margin-top: 8px; }
+    .issue-list { display: grid; gap: 8px; margin: 12px 0; }
+    .issue-list label { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-weight: 500; color: var(--text); }
+    .issue-list input { width: auto; margin-top: 4px; }
+    @media (max-width: 1400px) { main { grid-template-columns: 360px minmax(0, 1fr); } .side-panel { grid-column: 1 / -1; position: static; } }
+    @media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 18px; } .input-panel, .side-panel { position: static; } .summary-grid, .section-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Research Assistant</h1>
+    <div class="subtitle">Structured research runs backed by LangGraph, LiteLLM, Gemma 31B, Redis checkpoints, and Langfuse traces.</div>
+  </header>
+  <main>
+    <section class="card input-panel">
+      <div class="field">
+        <label for="question">Research question</label>
+        <textarea id="question" placeholder="Example: What are the tradeoffs between LangGraph Studio and a custom FastAPI visualization for our stack?"></textarea>
+      </div>
+      <div class="field row">
+        <div>
+          <label for="mode">Mode</label>
+          <select id="mode">
+            <option value="quick">Quick answer</option>
+            <option value="deep">Deep research</option>
+            <option value="comparison">Comparison</option>
+            <option value="decision_memo">Decision memo</option>
+          </select>
+        </div>
+        <div>
+          <label for="thread">Thread ID</label>
+          <input id="thread" value="research-ui" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="constraints">Constraints / context</label>
+        <input id="constraints" placeholder="Optional: focus on our local stack, prefer official docs, call out uncertainty..." />
+      </div>
+      <div class="row">
+        <button id="run">Run structured research</button>
+        <button id="run-interactive" class="secondary">Run Interactive Review</button>
+        <button id="clear" class="secondary">Clear</button>
+      </div>
+      <div id="status" class="status">Ready.</div>
+    </section>
+
+    <section class="card brief-panel">
+      <div class="brief-toolbar">
+        <h2 style="margin: 0;">Research Brief</h2>
+        <div class="row" style="flex: 0 0 auto;">
+          <button id="follow-up" class="secondary" disabled>Run Follow-Up Pass</button>
+          <button id="copy-markdown" class="secondary" disabled>Copy Markdown</button>
+        </div>
+      </div>
+      <div id="brief" class="answer empty">Submit a question to see the structured research brief here.</div>
+    </section>
+
+    <aside class="card side-panel">
+      <h2>Run Context</h2>
+      <div id="meta">
+        <span class="pill">Backend: :8001</span>
+        <span class="pill">Frontend: :8080</span>
+        <span class="pill">Model: gemma-local</span>
+        <span id="confidence" class="pill">Confidence: n/a</span>
+        <span id="source-count" class="pill">Sources: 0</span>
+      </div>
+      <h3>Useful Links</h3>
+      <div class="links">
+        <a href="http://localhost:3001" target="_blank" rel="noreferrer">Langfuse</a>
+        <a href="http://localhost:8001/research/graph/mermaid" target="_blank" rel="noreferrer">Research Graph Mermaid</a>
+        <a href="http://localhost:8001/graph" target="_blank" rel="noreferrer">Chat Graph Visualizer</a>
+        <a href="http://localhost:8001/health" target="_blank" rel="noreferrer">API Health</a>
+      </div>
+      <h3>Memory</h3>
+      <div id="memory-status" class="pill">Neo4j: checking...</div>
+      <div class="field">
+        <label for="memory-search">Search memory</label>
+        <input id="memory-search" placeholder="weak citations, GPU pricing, approved..." />
+      </div>
+      <div class="row">
+        <button id="memory-search-button" class="secondary">Search Memory</button>
+        <button id="memory-current-button" class="secondary" disabled>Current Run Memory</button>
+      </div>
+      <div class="row" style="margin-top: 10px;">
+        <button id="memory-backlog-button" class="secondary">Backlog</button>
+        <button id="memory-dedup-button" class="secondary">Dedup</button>
+        <button id="memory-audit-button" class="secondary" disabled>Audit Run</button>
+      </div>
+      <div id="memory-results" class="links empty">No memory query run yet.</div>
+      <h3>Recent Runs</h3>
+      <div id="runs" class="links empty">No saved runs loaded yet.</div>
+      <details>
+        <summary>Last Raw Response</summary>
+        <pre id="raw">{}</pre>
+      </details>
+    </aside>
+  </main>
+
+  <script>
+    const apiBase = window.__API_BASE__ || "http://localhost:8001";
+    const runButton = document.getElementById("run");
+    const interactiveButton = document.getElementById("run-interactive");
+    const clearButton = document.getElementById("clear");
+    const statusEl = document.getElementById("status");
+    const briefEl = document.getElementById("brief");
+    const rawEl = document.getElementById("raw");
+    const runsEl = document.getElementById("runs");
+    const memoryStatusEl = document.getElementById("memory-status");
+    const memoryResultsEl = document.getElementById("memory-results");
+    const memorySearchInput = document.getElementById("memory-search");
+    const memorySearchButton = document.getElementById("memory-search-button");
+    const memoryCurrentButton = document.getElementById("memory-current-button");
+    const memoryBacklogButton = document.getElementById("memory-backlog-button");
+    const memoryDedupButton = document.getElementById("memory-dedup-button");
+    const memoryAuditButton = document.getElementById("memory-audit-button");
+    const copyMarkdownButton = document.getElementById("copy-markdown");
+    const followUpButton = document.getElementById("follow-up");
+    let latestMarkdown = "";
+    let currentRunId = "";
+    let currentRunData = null;
+    let currentInteractiveThreadId = "";
+    const confidenceEl = document.getElementById("confidence");
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function inlineMarkdown(value) {
+      return escapeHtml(value)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    }
+
+    function markdownToHtml(value) {
+      const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+      const html = [];
+      let listType = null;
+      const closeList = () => {
+        if (listType) {
+          html.push(`</${listType}>`);
+          listType = null;
+        }
+      };
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          closeList();
+          continue;
+        }
+        if (line.startsWith("### ")) {
+          closeList();
+          html.push(`<h3>${inlineMarkdown(line.slice(4))}</h3>`);
+          continue;
+        }
+        if (line.startsWith("## ")) {
+          closeList();
+          html.push(`<h2>${inlineMarkdown(line.slice(3))}</h2>`);
+          continue;
+        }
+        if (line.startsWith("# ")) {
+          closeList();
+          html.push(`<h2>${inlineMarkdown(line.slice(2))}</h2>`);
+          continue;
+        }
+        if (/^[-*]\s+/.test(line)) {
+          if (listType !== "ul") {
+            closeList();
+            listType = "ul";
+            html.push("<ul>");
+          }
+          html.push(`<li>${inlineMarkdown(line.replace(/^[-*]\s+/, ""))}</li>`);
+          continue;
+        }
+        if (/^\d+\.\s+/.test(line)) {
+          if (listType !== "ol") {
+            closeList();
+            listType = "ol";
+            html.push("<ol>");
+          }
+          html.push(`<li>${inlineMarkdown(line.replace(/^\d+\.\s+/, ""))}</li>`);
+          continue;
+        }
+        closeList();
+        html.push(`<p>${inlineMarkdown(line)}</p>`);
+      }
+      closeList();
+      return `<div class="prose">${html.join("\n")}</div>`;
+    }
+
+    function list(items) {
+      if (!items || items.length === 0) return "<p class='empty'>None.</p>";
+      return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+    }
+
+    function verificationFor(citation, verifications) {
+      return (verifications || []).find((item) => item.url === citation.url && item.claim === citation.claim) || null;
+    }
+
+    function verdictClass(verdict) {
+      if (verdict === "supported") return "pill ok";
+      if (verdict === "unsupported") return "pill error";
+      return "pill";
+    }
+
+    function citationCards(citations, verifications) {
+      if (!citations || citations.length === 0) return "<p class='empty'>No structured citations returned.</p>";
+      return `<ul>${citations.map((item) => {
+        const claim = escapeHtml(item.claim || "Untitled claim");
+        const title = escapeHtml(item.title || item.url || "Source");
+        const url = escapeHtml(item.url || "#");
+        const evidence = escapeHtml(item.evidence || "");
+        const confidence = escapeHtml(item.confidence || "medium");
+        const verification = verificationFor(item, verifications);
+        const verdict = verification ? escapeHtml(verification.verdict || "unclear") : "not_verified";
+        const rationale = verification ? escapeHtml(verification.rationale || "") : "";
+        return `<li><strong>${claim}</strong><br><a href="${url}" target="_blank" rel="noreferrer">${title}</a> <span class="empty">(${confidence})</span><br><span class="${verdictClass(verdict)}">${verdict}</span>${rationale ? `<p>${rationale}</p>` : ""}${evidence ? `<p>${evidence}</p>` : ""}</li>`;
+      }).join("")}</ul>`;
+    }
+
+    function scoreFor(source, scores) {
+      return (scores || []).find((item) => item.url === source.url) || null;
+    }
+
+    function scoreBadge(score) {
+      if (score >= 75) return "pill ok";
+      if (score <= 45) return "pill error";
+      return "pill";
+    }
+
+    function sourceCards(sources, evidence, scores) {
+      const items = evidence && evidence.length ? evidence : sources;
+      if (!items || items.length === 0) return "<p class='empty'>No sources returned.</p>";
+      return `<ul>${items.map((item) => {
+        const title = escapeHtml(item.title || item.url || "Untitled source");
+        const url = escapeHtml(item.url || "#");
+        const status = escapeHtml(item.status || "candidate");
+        const snippet = escapeHtml(item.snippet || "");
+        const score = scoreFor(item, scores);
+        const scoreValue = score ? Number(score.score || 0) : 0;
+        const scoreText = score ? `${scoreValue}/100 ${escapeHtml(score.authority || "unknown")} ${escapeHtml(score.relevance || "unknown")} risk:${escapeHtml(score.risk || "unknown")}` : "not scored";
+        const rationale = score ? escapeHtml(score.rationale || "") : "";
+        return `<li><a href="${url}" target="_blank" rel="noreferrer">${title}</a><br><span class="${scoreBadge(scoreValue)}">${scoreText}</span> <span class="empty">${status}</span>${rationale ? `<p>${rationale}</p>` : ""}${snippet ? `<p>${snippet}</p>` : ""}</li>`;
+      }).join("")}</ul>`;
+    }
+
+    function executionTrace(items) {
+      const rows = (items || []).map((item) => `
+        <tr>
+          <td><code>${escapeHtml(item.node || "")}</code></td>
+          <td>${escapeHtml(String(item.duration_ms || 0))} ms</td>
+          <td>${escapeHtml(item.branch || "")}</td>
+          <td>${escapeHtml(item.summary || "")}</td>
+        </tr>
+      `).join("");
+      if (!rows) return "<p>None</p>";
+      return `
+        <table>
+          <thead><tr><th>Node</th><th>Duration</th><th>Branch</th><th>Summary</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function policyReport(report) {
+      const item = report || {};
+      const statusClass = item.passed === false ? "pill bad" : "pill ok";
+      return `
+        <div class="card">
+          <p><span class="${statusClass}">Policy ${item.passed === false ? "needs attention" : "passed"}</span></p>
+          <strong>Blocking issues</strong>
+          ${list(item.blocking_issues)}
+          <strong>Warnings</strong>
+          ${list(item.warnings)}
+          <strong>Passed checks</strong>
+          ${list(item.checks)}
+        </div>
+      `;
+    }
+
+    function qualityReport(report) {
+      const item = report || {};
+      return `
+        <div class="card">
+          <strong>Confidence rationale</strong>
+          <p>${escapeHtml(item.confidence_rationale || "Not provided.")}</p>
+          <strong>Unsupported claims</strong>
+          ${list(item.unsupported_claims)}
+          <strong>Weak citations</strong>
+          ${list(item.weak_citations)}
+          <strong>Missing perspectives</strong>
+          ${list(item.missing_perspectives)}
+          <strong>Source risks</strong>
+          ${list(item.source_risks)}
+          <strong>Revision instructions applied</strong>
+          ${list(item.revision_instructions)}
+        </div>
+      `;
+    }
+
+    function sectionCard(title, body, extraClass = "") {
+      return `<section class="section-card ${extraClass}"><h3>${escapeHtml(title)}</h3>${body}</section>`;
+    }
+
+    function metricCards(data) {
+      const policy = data.policy_report || {};
+      const policyText = policy.passed === false ? "Needs Review" : "Passed";
+      const policyNote = `${(policy.blocking_issues || []).length} blockers, ${(policy.warnings || []).length} warnings`;
+      const sourceCount = (data.sources || []).length + (data.deepened_sources || []).length + (data.repair_sources || []).length;
+      const traceTotal = (data.execution_trace || []).reduce((sum, item) => sum + Number(item.duration_ms || 0), 0);
+      return `
+        <div class="summary-grid">
+          <div class="metric-card"><span class="metric-label">Policy</span><span class="metric-value">${escapeHtml(policyText)}</span><span class="metric-note">${escapeHtml(policyNote)}</span></div>
+          <div class="metric-card"><span class="metric-label">Confidence</span><span class="metric-value">${escapeHtml(data.confidence || "n/a")}</span><span class="metric-note">final answer</span></div>
+          <div class="metric-card"><span class="metric-label">Citations</span><span class="metric-value">${(data.citations || []).length}</span><span class="metric-note">structured claims</span></div>
+          <div class="metric-card"><span class="metric-label">Sources</span><span class="metric-value">${sourceCount}</span><span class="metric-note">initial + deep + repair</span></div>
+          <div class="metric-card"><span class="metric-label">Graph Time</span><span class="metric-value">${Math.round(traceTotal / 1000)}s</span><span class="metric-note">node timings</span></div>
+        </div>
+      `;
+    }
+
+    function renderSavedRun(data) {
+      rawEl.textContent = JSON.stringify(data, null, 2);
+      latestMarkdown = data.markdown || "";
+      currentRunId = data.run_id || "";
+      currentRunData = data;
+      copyMarkdownButton.disabled = !latestMarkdown;
+      followUpButton.disabled = !currentRunId;
+      memoryCurrentButton.disabled = !currentRunId;
+      memoryAuditButton.disabled = !currentRunId;
+      renderBrief(data);
+      loadMemoryForCurrentRun();
+      setStatus(`Loaded saved run: ${data.run_id}`);
+    }
+
+    function reviewIssues(data) {
+      const policy = data.policy_report || {};
+      const quality = data.quality_report || {};
+      return [
+        ...(policy.blocking_issues || []).map((item) => `Policy blocker: ${item}`),
+        ...(policy.warnings || []).map((item) => `Policy warning: ${item}`),
+        ...(quality.unsupported_claims || []).map((item) => `Unsupported claim: ${item}`),
+        ...(quality.weak_citations || []).map((item) => `Weak citation: ${item}`),
+        ...(quality.missing_perspectives || []).map((item) => `Missing perspective: ${item}`),
+      ];
+    }
+
+    function humanReview(data) {
+      const review = data.human_review || {};
+      const issues = reviewIssues(data);
+      const selected = new Set(review.selected_issues || issues);
+      const statusClass = review.decision === "approved" ? "pill ok" : review.decision === "needs_work" ? "pill warn" : "pill";
+      const status = review.decision || "pending";
+      const issueControls = issues.length
+        ? `<div class="issue-list">${issues.map((issue, index) => `
+            <label>
+              <input type="checkbox" class="review-issue" value="${escapeHtml(issue)}" ${selected.has(issue) ? "checked" : ""} />
+              <span>${escapeHtml(issue)}</span>
+            </label>
+          `).join("")}</div>`
+        : `<p class="empty">No policy or quality issues were detected. You can still leave reviewer notes.</p>`;
+      return `
+        <div class="card">
+          <p><span class="${statusClass}">Human review: ${escapeHtml(status)}</span></p>
+          ${review.reviewed_at ? `<p class="muted-line">Reviewed at ${escapeHtml(new Date(review.reviewed_at).toLocaleString())}</p>` : `<p class="muted-line">Review this result before treating it as accepted.</p>`}
+          ${review.follow_up_run_id ? `<p class="muted-line">Follow-up run: <code>${escapeHtml(review.follow_up_run_id)}</code></p>` : ""}
+          ${data.parent_run_id ? `<p class="muted-line">Generated from parent run: <code>${escapeHtml(data.parent_run_id)}</code></p>` : ""}
+          <label for="review-notes">Reviewer notes / extra instructions</label>
+          <textarea id="review-notes" class="review-notes" placeholder="Example: validate the pricing claims and add more official vendor sources.">${escapeHtml(review.reviewer_notes || "")}</textarea>
+          <strong>Issues to carry forward</strong>
+          ${issueControls}
+          <div class="review-actions">
+            <button type="button" class="secondary" data-review-decision="approved">Approve Final Answer</button>
+            <button type="button" class="secondary" data-review-decision="needs_work">Mark Needs Work</button>
+            <button type="button" data-review-follow-up="true">Run Follow-Up From Review</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function selectedReviewIssues() {
+      return Array.from(document.querySelectorAll(".review-issue:checked")).map((item) => item.value);
+    }
+
+    async function saveHumanReview(decision) {
+      if (!currentRunId) return;
+      const notes = document.getElementById("review-notes")?.value.trim() || "";
+      setStatus(decision === "approved" ? "Saving human approval..." : "Saving needs-work review...");
+      const response = await fetch(`${apiBase}/research/runs/${currentRunId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, reviewer_notes: notes, selected_issues: selectedReviewIssues() }),
+      });
+      const data = await response.json();
+      rawEl.textContent = JSON.stringify(data, null, 2);
+      if (!response.ok) throw new Error(data.detail || `Review save failed with ${response.status}`);
+      renderSavedRun(data);
+      await loadRuns();
+      setStatus(decision === "approved" ? "Human review saved: approved." : "Human review saved: needs work.");
+    }
+
+    function renderInteractivePause(data) {
+      const review = data.review || {};
+      const policy = review.policy_report || {};
+      const quality = review.quality_report || {};
+      const issues = review.suggested_issues || [];
+      currentInteractiveThreadId = data.thread_id || "";
+      currentRunId = "";
+      currentRunData = null;
+      latestMarkdown = "";
+      copyMarkdownButton.disabled = true;
+      followUpButton.disabled = true;
+      briefEl.className = "answer";
+      rawEl.textContent = JSON.stringify(data, null, 2);
+      briefEl.innerHTML = `
+        ${sectionCard("Graph Paused For Human Review", `
+          <p><span class="pill warn">LangGraph interrupt active</span></p>
+          <p class="muted-line">Thread: <code>${escapeHtml(data.thread_id || "")}</code></p>
+          <p>${escapeHtml(review.instructions || "Review the draft and choose how to resume the graph.")}</p>
+        `, "primary")}
+        ${sectionCard("Draft Answer", markdownToHtml(review.answer || "No draft answer returned."))}
+        <div class="section-grid">
+          ${sectionCard("Policy Report", policyReport(policy), "compact")}
+          ${sectionCard("Quality Report", qualityReport(quality), "compact")}
+        </div>
+        ${sectionCard("Resume Decision", `
+          <label for="interactive-review-notes">Reviewer notes for resume</label>
+          <textarea id="interactive-review-notes" class="review-notes" placeholder="Example: add stronger sources on pricing before finalizing."></textarea>
+          <strong>Issues to carry into resume</strong>
+          ${issues.length ? `<div class="issue-list">${issues.map((issue) => `
+            <label>
+              <input type="checkbox" class="interactive-review-issue" value="${escapeHtml(issue)}" checked />
+              <span>${escapeHtml(issue)}</span>
+            </label>
+          `).join("")}</div>` : `<p class="empty">No issues suggested by the graph.</p>`}
+          <div class="review-actions">
+            <button type="button" data-interactive-decision="approved">Approve And Finalize Graph</button>
+            <button type="button" class="secondary" data-interactive-decision="needs_work">Resume With One More Repair Pass</button>
+          </div>
+        `)}
+      `;
+      setStatus(`Graph paused for human review. Thread: ${data.thread_id}.`);
+    }
+
+    function selectedInteractiveIssues() {
+      return Array.from(document.querySelectorAll(".interactive-review-issue:checked")).map((item) => item.value);
+    }
+
+    async function resumeInteractiveReview(decision) {
+      if (!currentInteractiveThreadId) return;
+      interactiveButton.disabled = true;
+      runButton.disabled = true;
+      const notes = document.getElementById("interactive-review-notes")?.value.trim() || "";
+      setStatus(decision === "approved" ? "Resuming graph to finalize..." : "Resuming graph with one more repair pass...");
+      try {
+        const response = await fetch(`${apiBase}/research/interactive/${currentInteractiveThreadId}/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision, reviewer_notes: notes, selected_issues: selectedInteractiveIssues() }),
+        });
+        const data = await response.json();
+        rawEl.textContent = JSON.stringify(data, null, 2);
+        if (!response.ok) throw new Error(data.detail || `Interactive resume failed with ${response.status}`);
+        if (data.status === "awaiting_review") {
+          renderInteractivePause(data);
+          return;
+        }
+        if (data.run) {
+          currentInteractiveThreadId = "";
+          renderSavedRun(data.run);
+          await loadRuns();
+          setStatus(`Interactive graph completed. Saved run: ${data.run.run_id}.`);
+        }
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        interactiveButton.disabled = false;
+        runButton.disabled = false;
+      }
+    }
+
+    function renderBrief(data) {
+      confidenceEl.textContent = `Confidence: ${data.confidence || "n/a"}`;
+      document.getElementById("source-count").textContent = `Sources: ${(data.sources || []).length}`;
+      confidenceEl.className = data.confidence === "high" ? "pill ok" : "pill";
+      briefEl.className = "answer";
+      briefEl.innerHTML = `
+        ${metricCards(data)}
+        ${sectionCard("Answer", `${markdownToHtml(data.answer || "No answer returned.")}<div class="section-footer">Final answer after synthesis, critique, policy check, and bounded repair.</div>`, "primary")}
+        <div class="section-grid">
+          ${sectionCard("Policy Report", policyReport(data.policy_report), "compact")}
+          ${sectionCard("Quality Report", qualityReport(data.quality_report), "compact")}
+        </div>
+        ${sectionCard("Human Review", humanReview(data), "compact")}
+        ${sectionCard("Retrieved Research Memory", retrievedMemory(data.memory_context), "compact")}
+        ${sectionCard("Findings", list(data.findings))}
+        ${sectionCard("Detailed Synthesis From Executed Plan", list(data.plan_results))}
+        ${sectionCard("Deepened Areas", list(data.deepened_areas))}
+        <details>
+          <summary>Citations and Verification</summary>
+          ${citationCards(data.citations, data.citation_verifications)}
+        </details>
+        <details>
+          <summary>Sources and Source Quality</summary>
+          <h3>Initial Sources</h3>
+          ${sourceCards(data.sources, data.evidence, data.source_scores)}
+          <h3>Deepening Sources</h3>
+          ${sourceCards(data.deepened_sources, data.deepened_evidence, data.deepened_source_scores)}
+          <h3>Policy Repair Sources</h3>
+          ${sourceCards(data.repair_sources, data.repair_evidence, data.repair_source_scores)}
+        </details>
+        <details>
+          <summary>Execution Plan / Audit Trail</summary>
+          <h3>Execution Trace</h3>
+          ${executionTrace(data.execution_trace)}
+          <h3>Executed Plan</h3>
+          ${list(data.plan)}
+          <h3>Gap Analysis</h3>
+          ${list(data.gap_analysis)}
+          <h3>Deepening Queries</h3>
+          ${list(data.deepening_queries)}
+          <h3>Policy Repair</h3>
+          <p>Repair iterations: ${escapeHtml(String(data.repair_iterations || 0))}</p>
+          <h3>Repair Queries</h3>
+          ${list(data.repair_queries)}
+          <h3>Source Strategy</h3>
+          ${list(data.source_strategy)}
+        </details>
+        <div class="section-grid">
+          ${sectionCard("Limitations", list(data.limitations), "compact")}
+          ${sectionCard("Follow-Up Questions", list(data.follow_up_questions), "compact")}
+        </div>
+      `;
+    }
+
+    function memoryRunList(items) {
+      if (!items || !items.length) return "<p class='empty'>No matching memory found.</p>";
+      return items.map((item) => {
+        const question = escapeHtml((item.question || "Untitled run").slice(0, 100));
+        const runId = escapeHtml(item.run_id || "");
+        const confidence = escapeHtml(item.confidence || "n/a");
+        const review = escapeHtml(item.review_decision || "pending");
+        const hosts = (item.hosts || []).filter(Boolean).map(escapeHtml).join(", ");
+        return `<a href="#" data-run-id="${runId}">${question}<br><span class="empty">${runId} | ${confidence} | review: ${review}${hosts ? ` | ${hosts}` : ""}</span></a>`;
+      }).join("");
+    }
+
+    function renderRunMemory(data) {
+      if (!data) {
+        memoryResultsEl.textContent = "No graph memory found for this run yet.";
+        memoryResultsEl.className = "links empty";
+        return;
+      }
+      const run = data.run || {};
+      const sources = data.sources || [];
+      const claims = data.claims || [];
+      const followUps = data.follow_up_run_ids || [];
+      memoryResultsEl.className = "links";
+      memoryResultsEl.innerHTML = `
+        <div class="muted-line">Graph memory for <code>${escapeHtml(run.run_id || currentRunId)}</code></div>
+        <div class="muted-line">${sources.length} source node(s), ${claims.length} claim node(s), ${followUps.length} follow-up link(s)</div>
+        ${sources.slice(0, 5).map((source) => `<a href="${escapeHtml(source.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(source.title || source.url || "Source")}<br><span class="empty">${escapeHtml(source.host || "")} | ${escapeHtml(source.source_hash || "")}</span></a>`).join("")}
+      `;
+    }
+
+    function retrievedMemory(context) {
+      const item = context || {};
+      const related = item.related_runs || [];
+      const claims = item.prior_claims || [];
+      const sources = item.trusted_sources || [];
+      return `
+        <p class="muted-line">Used before planning: ${related.length} related run(s), ${claims.length} prior claim(s), ${sources.length} reusable source(s).</p>
+        <strong>Related Runs</strong>
+        ${related.length ? memoryRunList(related) : "<p class='empty'>None.</p>"}
+        <strong>Prior Claims</strong>
+        ${claims.length ? `<ul>${claims.slice(0, 5).map((claim) => `<li>${escapeHtml(claim.claim || "")}</li>`).join("")}</ul>` : "<p class='empty'>None.</p>"}
+      `;
+    }
+
+    function renderBacklog(items) {
+      memoryResultsEl.className = "links";
+      if (!items || !items.length) {
+        memoryResultsEl.innerHTML = "<p class='empty'>No unresolved research backlog found.</p>";
+        return;
+      }
+      memoryResultsEl.innerHTML = items.map((item) => {
+        const runId = escapeHtml(item.run_id || "");
+        const issueSummary = `${item.blocking_issues || 0} blockers, ${item.warnings || 0} warnings, ${item.weak_citations || 0} weak citations, ${item.missing_perspectives || 0} missing perspectives`;
+        return `<a href="#" data-run-id="${runId}">${escapeHtml((item.question || "Untitled run").slice(0, 100))}<br><span class="empty">${escapeHtml(item.review_decision || "pending")} | ${escapeHtml(issueSummary)}</span></a>`;
+      }).join("");
+    }
+
+    function renderAudit(data) {
+      if (!data) {
+        memoryResultsEl.textContent = "No audit data found.";
+        memoryResultsEl.className = "links empty";
+        return;
+      }
+      const run = data.run || {};
+      const review = data.review || {};
+      const policy = data.policy || {};
+      const quality = data.quality || {};
+      const followUps = data.follow_ups || [];
+      const parents = data.parents || [];
+      memoryResultsEl.className = "links";
+      memoryResultsEl.innerHTML = `
+        <div class="muted-line">Audit for <code>${escapeHtml(run.run_id || currentRunId)}</code></div>
+        <div class="muted-line">Review: ${escapeHtml(review.decision || "pending")} | Policy blockers: ${policy.blocking_issue_count || 0} | Warnings: ${policy.warning_count || 0}</div>
+        <div class="muted-line">Quality: ${quality.weak_citation_count || 0} weak citations, ${quality.missing_perspective_count || 0} missing perspectives</div>
+        <strong>Parents</strong>
+        ${parents.length ? memoryRunList(parents) : "<p class='empty'>None.</p>"}
+        <strong>Follow-ups</strong>
+        ${followUps.length ? memoryRunList(followUps) : "<p class='empty'>None.</p>"}
+      `;
+    }
+
+    function renderDedup(data) {
+      const claims = (data && data.claims) || [];
+      const sources = (data && data.repeated_sources) || [];
+      memoryResultsEl.className = "links";
+      memoryResultsEl.innerHTML = `
+        <div class="muted-line">Repeated claims: ${claims.length}; repeated sources: ${sources.length}</div>
+        <strong>Repeated Claims</strong>
+        ${claims.length ? `<ul>${claims.slice(0, 6).map((claim) => `<li>${escapeHtml(claim.claim || "")}</li>`).join("")}</ul>` : "<p class='empty'>None.</p>"}
+        <strong>Repeated Sources</strong>
+        ${sources.length ? sources.slice(0, 6).map((source) => `<a href="${escapeHtml(source.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(source.title || source.url || "Source")}<br><span class="empty">${escapeHtml(source.host || "")} | ${source.run_count || 0} run(s)</span></a>`).join("") : "<p class='empty'>None.</p>"}
+      `;
+    }
+
+    async function loadMemoryHealth() {
+      try {
+        const response = await fetch(`${apiBase}/memory/health`);
+        const data = await response.json();
+        memoryStatusEl.textContent = data.ok ? "Neo4j: connected" : "Neo4j: unavailable";
+        memoryStatusEl.className = data.ok ? "pill ok" : "pill bad";
+      } catch (error) {
+        memoryStatusEl.textContent = "Neo4j: unavailable";
+        memoryStatusEl.className = "pill bad";
+      }
+    }
+
+    async function loadMemoryForCurrentRun() {
+      if (!currentRunId) return;
+      try {
+        const response = await fetch(`${apiBase}/memory/research/runs/${currentRunId}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "No memory for current run.");
+        renderRunMemory(data);
+      } catch (error) {
+        memoryResultsEl.textContent = error.message;
+        memoryResultsEl.className = "links empty";
+      }
+    }
+
+    async function searchMemory() {
+      const query = memorySearchInput.value.trim();
+      if (!query) {
+        memoryResultsEl.textContent = "Enter a memory search query.";
+        memoryResultsEl.className = "links empty";
+        return;
+      }
+      try {
+        const response = await fetch(`${apiBase}/memory/research/search?q=${encodeURIComponent(query)}&limit=10`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Memory search failed.");
+        memoryResultsEl.className = "links";
+        memoryResultsEl.innerHTML = memoryRunList(data);
+      } catch (error) {
+        memoryResultsEl.textContent = error.message;
+        memoryResultsEl.className = "links error";
+      }
+    }
+
+    async function loadBacklog() {
+      try {
+        const response = await fetch(`${apiBase}/memory/research/backlog?limit=25`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Backlog query failed.");
+        renderBacklog(data);
+      } catch (error) {
+        memoryResultsEl.textContent = error.message;
+        memoryResultsEl.className = "links error";
+      }
+    }
+
+    async function loadAuditForCurrentRun() {
+      if (!currentRunId) return;
+      try {
+        const response = await fetch(`${apiBase}/memory/research/runs/${currentRunId}/audit`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Audit query failed.");
+        renderAudit(data);
+      } catch (error) {
+        memoryResultsEl.textContent = error.message;
+        memoryResultsEl.className = "links error";
+      }
+    }
+
+    async function loadDedup() {
+      const query = memorySearchInput.value.trim();
+      try {
+        const response = await fetch(`${apiBase}/memory/research/dedup?q=${encodeURIComponent(query)}&limit=10`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Dedup query failed.");
+        renderDedup(data);
+      } catch (error) {
+        memoryResultsEl.textContent = error.message;
+        memoryResultsEl.className = "links error";
+      }
+    }
+
+    async function loadRuns() {
+      try {
+        const response = await fetch(`${apiBase}/research/runs?limit=10`);
+        const runs = await response.json();
+        if (!response.ok) throw new Error("Could not load saved runs.");
+        if (!runs.length) {
+          runsEl.textContent = "No saved runs yet.";
+          runsEl.className = "links empty";
+          return;
+        }
+        runsEl.className = "links";
+        runsEl.innerHTML = runs.map((run) => {
+          const question = escapeHtml(run.question.length > 74 ? `${run.question.slice(0, 74)}...` : run.question);
+          const created = escapeHtml(new Date(run.created_at).toLocaleString());
+          return `<a href="#" data-run-id="${escapeHtml(run.run_id)}">${question}<br><span class="empty">${created} | ${escapeHtml(run.confidence)} | ${run.source_count} sources | review: ${escapeHtml(run.review_decision || "pending")}</span></a>`;
+        }).join("");
+      } catch (error) {
+        runsEl.textContent = error.message;
+        runsEl.className = "links error";
+      }
+    }
+
+    async function loadRun(runId) {
+      const response = await fetch(`${apiBase}/research/runs/${runId}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Could not load saved run.");
+      renderSavedRun(data);
+    }
+
+    async function runResearch() {
+      const question = document.getElementById("question").value.trim();
+      const threadId = document.getElementById("thread").value.trim() || "research-ui";
+      const mode = document.getElementById("mode").value;
+      const constraints = document.getElementById("constraints").value.trim();
+      if (!question) {
+        setStatus("Please enter a research question.", true);
+        return;
+      }
+
+      runButton.disabled = true;
+      setStatus("Executing research graph: planning, searching, reading, scoring, synthesizing, and verifying...");
+      briefEl.textContent = "Thinking...";
+      briefEl.className = "answer empty";
+
+      try {
+        const response = await fetch(`${apiBase}/research`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, question, mode, constraints }),
+        });
+        const data = await response.json();
+        rawEl.textContent = JSON.stringify(data, null, 2);
+        if (!response.ok) {
+          throw new Error(data.detail || `Request failed with ${response.status}`);
+        }
+        latestMarkdown = data.markdown || "";
+        currentRunId = data.run_id || "";
+        currentRunData = data;
+        copyMarkdownButton.disabled = !latestMarkdown;
+        followUpButton.disabled = !currentRunId;
+        memoryCurrentButton.disabled = !currentRunId;
+        memoryAuditButton.disabled = !currentRunId;
+        renderBrief(data);
+        loadMemoryForCurrentRun();
+        setStatus(`Done. Thread: ${data.thread_id}. Trace name: research-pipeline.`);
+        await loadRuns();
+      } catch (error) {
+        briefEl.textContent = "Request failed.";
+        briefEl.className = "answer error";
+        setStatus(error.message, true);
+      } finally {
+        runButton.disabled = false;
+      }
+    }
+
+    async function runInteractiveResearch() {
+      const question = document.getElementById("question").value.trim();
+      const threadId = document.getElementById("thread").value.trim() || `research-ui-interactive-${Date.now()}`;
+      const mode = document.getElementById("mode").value;
+      const constraints = document.getElementById("constraints").value.trim();
+      if (!question) {
+        setStatus("Please enter a research question.", true);
+        return;
+      }
+      runButton.disabled = true;
+      interactiveButton.disabled = true;
+      setStatus("Executing interactive graph until the human review interrupt...");
+      briefEl.textContent = "Running until human review checkpoint...";
+      briefEl.className = "answer empty";
+      try {
+        const response = await fetch(`${apiBase}/research/interactive`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: threadId, question, mode, constraints }),
+        });
+        const data = await response.json();
+        rawEl.textContent = JSON.stringify(data, null, 2);
+        if (!response.ok) throw new Error(data.detail || `Interactive run failed with ${response.status}`);
+        if (data.status === "awaiting_review") {
+          renderInteractivePause(data);
+        } else if (data.run) {
+          renderSavedRun(data.run);
+          await loadRuns();
+          setStatus(`Interactive graph completed without pause. Saved run: ${data.run.run_id}.`);
+        }
+      } catch (error) {
+        briefEl.textContent = "Interactive request failed.";
+        briefEl.className = "answer error";
+        setStatus(error.message, true);
+      } finally {
+        runButton.disabled = false;
+        interactiveButton.disabled = false;
+      }
+    }
+
+    async function runFollowUp() {
+      if (!currentRunId) return;
+      followUpButton.disabled = true;
+      runButton.disabled = true;
+      const notes = document.getElementById("review-notes")?.value.trim() || "";
+      const issues = selectedReviewIssues();
+      const instruction = [
+        "Run one more targeted pass to address remaining policy warnings, blocking issues, weak citations, and missing perspectives.",
+        notes ? `Human reviewer notes: ${notes}` : "",
+        issues.length ? `Selected issues: ${issues.join("; ")}` : "",
+      ].filter(Boolean).join("\n");
+      setStatus("Running human-in-the-loop follow-up pass from policy and quality issues...");
+      try {
+        const response = await fetch(`${apiBase}/research/runs/${currentRunId}/follow-up`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "quick", instruction }),
+        });
+        const data = await response.json();
+        rawEl.textContent = JSON.stringify(data, null, 2);
+        if (!response.ok) {
+          throw new Error(data.detail || `Follow-up failed with ${response.status}`);
+        }
+        latestMarkdown = data.markdown || "";
+        currentRunId = data.run_id || "";
+        currentRunData = data;
+        copyMarkdownButton.disabled = !latestMarkdown;
+        followUpButton.disabled = !currentRunId;
+        memoryCurrentButton.disabled = !currentRunId;
+        memoryAuditButton.disabled = !currentRunId;
+        renderBrief(data);
+        loadMemoryForCurrentRun();
+        setStatus(`Follow-up complete. New run: ${data.run_id}.`);
+        await loadRuns();
+      } catch (error) {
+        setStatus(error.message, true);
+        followUpButton.disabled = !currentRunId;
+      } finally {
+        runButton.disabled = false;
+      }
+    }
+
+    briefEl.addEventListener("click", async (event) => {
+      const decisionButton = event.target.closest("button[data-review-decision]");
+      const followUpReviewButton = event.target.closest("button[data-review-follow-up]");
+      const interactiveDecisionButton = event.target.closest("button[data-interactive-decision]");
+      if (!decisionButton && !followUpReviewButton && !interactiveDecisionButton) return;
+      try {
+        if (interactiveDecisionButton) {
+          await resumeInteractiveReview(interactiveDecisionButton.dataset.interactiveDecision);
+        } else if (decisionButton) {
+          await saveHumanReview(decisionButton.dataset.reviewDecision);
+        } else {
+          await runFollowUp();
+        }
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
+    runsEl.addEventListener("click", async (event) => {
+      const link = event.target.closest("a[data-run-id]");
+      if (!link) return;
+      event.preventDefault();
+      try {
+        await loadRun(link.dataset.runId);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
+    followUpButton.addEventListener("click", runFollowUp);
+    memorySearchButton.addEventListener("click", searchMemory);
+    memoryCurrentButton.addEventListener("click", loadMemoryForCurrentRun);
+    memoryBacklogButton.addEventListener("click", loadBacklog);
+    memoryDedupButton.addEventListener("click", loadDedup);
+    memoryAuditButton.addEventListener("click", loadAuditForCurrentRun);
+    memorySearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") searchMemory();
+    });
+
+    copyMarkdownButton.addEventListener("click", async () => {
+      if (!latestMarkdown) return;
+      await navigator.clipboard.writeText(latestMarkdown);
+      setStatus("Markdown copied to clipboard.");
+    });
+
+    runButton.addEventListener("click", runResearch);
+    interactiveButton.addEventListener("click", runInteractiveResearch);
+    clearButton.addEventListener("click", () => {
+      document.getElementById("question").value = "";
+      document.getElementById("constraints").value = "";
+      briefEl.textContent = "Submit a question to see the structured research brief here.";
+      briefEl.className = "answer empty";
+      rawEl.textContent = "{}";
+      latestMarkdown = "";
+      currentRunId = "";
+      currentRunData = null;
+      currentInteractiveThreadId = "";
+      copyMarkdownButton.disabled = true;
+      followUpButton.disabled = true;
+      memoryCurrentButton.disabled = true;
+      memoryAuditButton.disabled = true;
+      memoryResultsEl.textContent = "No memory query run yet.";
+      memoryResultsEl.className = "links empty";
+      confidenceEl.textContent = "Confidence: n/a";
+      confidenceEl.className = "pill";
+      document.getElementById("source-count").textContent = "Sources: 0";
+      setStatus("Ready.");
+    });
+
+    loadMemoryHealth();
+    loadRuns();
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+langgraph
+langgraph-checkpoint-redis
+langchain-openai
+pydantic
+python-dotenv
+redis
+langfuse
+langchain
+httpx
+beautifulsoup4
+neo4j

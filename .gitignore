@@ -1,0 +1,43 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+*credentials*.txt
+ui-credentials.txt
+langfuse-credentials.txt
+
+# Runtime data and databases
+agent-platform/data/
+**/data/
+**/postgres-data/
+**/neo4j-data/
+**/neo4j-logs/
+**/redis-data/
+**/clickhouse-data/
+**/minio-data/
+**/volumes/
+
+# Docker local credential/config folders
+.docker/
+.docker-clean/
+**/.docker/
+**/.docker-clean/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

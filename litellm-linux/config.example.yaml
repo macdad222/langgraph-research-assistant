@@ -1,0 +1,15 @@
+model_list:
+  - model_name: gemma-local
+    litellm_params:
+      model: hosted_vllm/gemma-4-31b-it-nvfp4
+      api_base: http://your-vllm-host:8000/v1
+      api_key: os.environ/VLLM_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+
+litellm_settings:
+  drop_params: true
+  set_verbose: true
