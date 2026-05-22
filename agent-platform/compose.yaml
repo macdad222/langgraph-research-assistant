@@ -5,9 +5,8 @@ services:
     env_file:
       - .env
     environment:
-      REDIS_URL: redis://redis:6379/0
-    ports:
-      - "8001:8001"
+      REDIS_URL: redis://127.0.0.1:6379/0
+    network_mode: host
     volumes:
       - ./data:/data
     depends_on:
@@ -15,8 +14,6 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   redis:

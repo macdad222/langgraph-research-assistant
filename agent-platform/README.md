@@ -1,6 +1,6 @@
 # Agent Platform
 
-Local AI agent platform running on `localhost` with LangGraph, LiteLLM, Redis, Langfuse, Neo4j, and a web Research Assistant.
+Local AI agent platform running on a Linux agent host with LangGraph, LiteLLM, Redis, Langfuse, Neo4j, and a web Research Assistant.
 
 For the full architecture and operations guide, see [`PLATFORM_REFERENCE.md`](PLATFORM_REFERENCE.md).
 
@@ -8,27 +8,34 @@ For the full architecture and operations guide, see [`PLATFORM_REFERENCE.md`](PL
 
 | Service | URL | Purpose |
 | --- | --- | --- |
-| Research Assistant | `http://localhost:8080` | Main web UI |
-| Agent API | `http://localhost:8001` | FastAPI + LangGraph |
-| Neo4j Browser | `http://localhost:7474` | Research memory graph |
-| Langfuse | `http://localhost:3001` | Traces and observability |
-| LiteLLM | `http://your-vllm-host.example:4010/v1` | Model gateway |
-| vLLM | `http://your-vllm-host.example:8000/v1` | Dedicated inference server |
+| Admin Portal | `http://agent-host.example` | Landing page for service UIs |
+| Research Assistant | `http://agent-host.example:8080` | Main web UI |
+| Agent API | `http://agent-host.example:8001` | FastAPI + LangGraph |
+| Neo4j Browser | `http://agent-host.example:7474` | Research memory graph |
+| Langfuse | `http://agent-host.example:3001` | Traces and observability |
+| LiteLLM | `http://agent-host.example:4010/v1` | Model gateway |
+| vLLM | `http://vllm-host.example:8000/v1` | Dedicated inference server |
 
 ## Run
 
 ```bash
 cd ~/dev/agent-platform
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 Check status:
 
 ```bash
-docker-compose ps
+docker compose ps
 curl http://localhost:8001/health
 curl http://localhost:8001/memory/health
 ```
+
+## Linux Host Networking
+
+The Linux template runs `langgraph-app` with `network_mode: host`.
+
+That is intentional: it lets LiteLLM see LangGraph requests from the real agent host/LAN source address instead of a Docker bridge IP. Because of this, the app uses host-local service URLs such as `redis://127.0.0.1:6379/0` and `bolt://127.0.0.1:7687`.
 
 ## What The Research Assistant Does
 
@@ -190,7 +197,7 @@ curl -sS 'http://localhost:8001/memory/research/backlog?limit=10'
 
 ## Operational Notes
 
-- Docker Desktop on macOS can block image pulls over SSH due to keychain access. Pull from an interactive `omlx` session if needed.
+- The Linux template uses host networking for LangGraph so LiteLLM can log the real agent host/LAN source address.
 - Neo4j writes are best-effort; research runs still save to JSON if Neo4j is temporarily unavailable.
 - OPA is not wired yet. Current policy checks are Python checks inside the research graph.
 - Do not commit or paste active API keys from `.env`.

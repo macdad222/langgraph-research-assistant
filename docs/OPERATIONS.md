@@ -1,12 +1,39 @@
 # Operations Guide
 
+## Recommended Linux Layout
+
+The deployment is split into separate Compose stacks:
+
+```text
+admin-portal/       Static landing page on port 80
+litellm-linux/      LiteLLM + Postgres
+langfuse-platform/  Langfuse + Postgres + ClickHouse + Redis + MinIO
+agent-platform/     LangGraph API + Redis + Neo4j + Research UI
+```
+
+LiteLLM and the LangGraph API use host networking in the Linux template. This keeps the LangGraph-to-LiteLLM request path on the host/LAN network stack, so LiteLLM access logs show the real host/LAN source address instead of Docker bridge addresses like `172.x.x.x`.
+
+## Admin Portal
+
+```bash
+cd admin-portal
+docker compose up -d
+docker compose ps
+```
+
+Open:
+
+```text
+http://agent-host.example
+```
+
 ## Agent Platform
 
 ```bash
 cd agent-platform
-docker-compose up -d --build
-docker-compose ps
-docker-compose logs -f langgraph-app
+docker compose up -d --build
+docker compose ps
+docker compose logs -f langgraph-app
 ```
 
 Health checks:
@@ -34,7 +61,7 @@ http://localhost:7474
 cd langfuse-platform
 cp .env.example .env
 # edit .env
-docker-compose up -d
+docker compose up -d
 ```
 
 ## LiteLLM Linux Template
@@ -44,8 +71,16 @@ cd litellm-linux
 cp .env.example .env
 cp config.example.yaml config.yaml
 # edit .env and config.yaml
-docker-compose up -d
+docker compose up -d
 ```
+
+The template publishes LiteLLM Postgres only on host loopback:
+
+```text
+127.0.0.1:5433 -> litellm-db:5432
+```
+
+LiteLLM itself listens directly on host port `4010` using `network_mode: host`.
 
 ## Common Local Ports
 
@@ -57,3 +92,19 @@ docker-compose up -d
 - Langfuse: `3001`
 - LiteLLM: `4010`
 - vLLM: `8000`
+
+## Common Checks
+
+```bash
+curl http://localhost:8001/health
+curl http://localhost:8001/memory/health
+curl http://localhost:3001/api/public/health
+curl http://localhost:4010/health/liveliness
+```
+
+Check LiteLLM source IP logging:
+
+```bash
+cd litellm-linux
+docker compose logs --tail=100 litellm-linux-test | grep "POST /v1/chat/completions"
+```

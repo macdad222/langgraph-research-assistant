@@ -92,15 +92,18 @@ workflow.
 
 There are two main machines in the current setup.
 
-Machine 1: localhost
+Machine 1: agent-host.example
 ----------------------------
 
 This is the agent platform server.
 
 It runs:
 
+- Admin portal
 - LangGraph app
 - Research Assistant web UI
+- LiteLLM
+- LiteLLM Postgres database
 - Redis
 - Neo4j
 - Langfuse
@@ -108,13 +111,15 @@ It runs:
 
 Important URLs:
 
-  Research UI:        http://localhost:8080
-  Agent API:          http://localhost:8001
-  Neo4j Browser:      http://localhost:7474
-  Langfuse:           http://localhost:3001
+  Admin Portal:       http://agent-host.example
+  Research UI:        http://agent-host.example:8080
+  Agent API:          http://agent-host.example:8001
+  LiteLLM UI:         http://agent-host.example:4010/ui
+  Neo4j Browser:      http://agent-host.example:7474
+  Langfuse:           http://agent-host.example:3001
 
 
-Machine 2: your-vllm-host.example
+Machine 2: vllm-host.example
 ----------------------------
 
 This is the model/inference server.
@@ -122,13 +127,18 @@ This is the model/inference server.
 It runs:
 
 - vLLM
-- LiteLLM
-- LiteLLM Postgres database
 
 Important URLs:
 
-  LiteLLM API:        http://your-vllm-host.example:4010/v1
-  vLLM API:           http://your-vllm-host.example:8000/v1
+  vLLM API:           http://vllm-host.example:8000/v1
+
+Important networking detail:
+
+  LiteLLM and the LangGraph API run with host networking on Linux.
+
+This means LiteLLM sees LangGraph requests as coming from the real agent host
+LAN address, not from a Docker bridge address like 172.x.x.x. That matters if
+you want LiteLLM logs and future access policies to identify the real host path.
 
 
 High-level machine diagram
@@ -136,17 +146,21 @@ High-level machine diagram
 
   Your Browser
       |
-      | http://localhost:8080
+      | http://agent-host.example
+      v
+  Admin Portal
+      |
+      | http://agent-host.example:8080
       v
   Research Assistant UI
       |
-      | http://localhost:8001
+      | http://agent-host.example:8001
       v
   LangGraph FastAPI App
       |
       | asks model through LiteLLM
       v
-  LiteLLM on your-vllm-host.example
+  LiteLLM on agent-host.example
       |
       | sends request to vLLM
       v

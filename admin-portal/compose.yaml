@@ -1,0 +1,9 @@
+services:
+  admin-portal:
+    image: nginx:1.27-alpine
+    container_name: admin-portal
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./site:/usr/share/nginx/html:ro

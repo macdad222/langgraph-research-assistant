@@ -1,18 +1,19 @@
 # AI Agent Platform Reference
 
-Last updated: 2026-05-21
+Last updated: 2026-05-22
 
-This document captures the current local agent platform running on `localhost`.
+This document captures the current Linux-oriented agent platform deployment using sanitized example hostnames.
 
 ## What Exists Now
 
 The platform is a local agent stack for structured research and experimentation with LangGraph-based workflows. It includes:
 
 - A FastAPI + LangGraph application container.
-- LiteLLM model access to the Linux vLLM server.
+- LiteLLM model access to a dedicated vLLM server.
 - Redis-backed LangGraph checkpoints.
 - Langfuse tracing.
 - A web-based Research Assistant frontend.
+- A static admin portal with links to all service UIs.
 - File-backed research run persistence in `/data/research-runs`.
 - Neo4j research memory for prior runs, sources, claims, reviews, policy reports, and follow-up chains.
 - Human-in-the-loop review controls, including true LangGraph `interrupt()` / `Command(resume=...)` flow.
@@ -22,11 +23,15 @@ The platform is a local agent stack for structured research and experimentation 
 ```text
 Browser / API Client
   |
-  | http://localhost:8080
+  | http://agent-host.example
+  v
+Admin Portal
+  |
+  | http://agent-host.example:8080
   v
 Research Assistant Frontend
   |
-  | http://localhost:8001
+  | http://agent-host.example:8001
   v
 FastAPI + LangGraph App
   |-- Redis checkpoints
@@ -34,30 +39,32 @@ FastAPI + LangGraph App
   |-- Neo4j research memory
   |-- Langfuse tracing callback
   |
-  | OpenAI-compatible API
+  | OpenAI-compatible API over host/LAN network stack
   v
-LiteLLM Proxy on your-vllm-host.example:4010
+LiteLLM Proxy on agent-host.example:4010
   |
   | hosted_vllm / OpenAI-compatible API
   v
-vLLM Inference Server on your-vllm-host.example:8000
+vLLM Inference Server on vllm-host.example:8000
 ```
 
 ## Hosts And URLs
 
 | Service | URL | Notes |
 | --- | --- | --- |
-| Research Assistant UI | `http://localhost:8080` | Main end-user frontend |
-| Agent API health | `http://localhost:8001/health` | FastAPI health check |
-| Chat graph visualizer | `http://localhost:8001/graph` | Browser-rendered Mermaid graph |
-| Chat graph Mermaid | `http://localhost:8001/graph/mermaid` | Raw Mermaid graph text |
-| Research graph Mermaid | `http://localhost:8001/research/graph/mermaid` | Raw research graph text |
-| Neo4j Browser | `http://localhost:7474` | Research memory graph UI |
-| Neo4j Bolt | `bolt://localhost:7687` | Driver connection from host/LAN |
-| Langfuse UI | `http://localhost:3001` | Observability and traces |
-| LiteLLM API | `http://your-vllm-host.example:4010/v1` | Current LangGraph model gateway |
-| LiteLLM UI | `http://your-vllm-host.example:4010/ui` | Linux LiteLLM management UI, if enabled |
-| vLLM API | `http://your-vllm-host.example:8000/v1` | Dedicated inference server |
+| Admin portal | `http://agent-host.example` | Landing page for service links |
+| Research Assistant UI | `http://agent-host.example:8080` | Main end-user frontend |
+| Agent API health | `http://agent-host.example:8001/health` | FastAPI health check |
+| Agent API docs | `http://agent-host.example:8001/docs` | FastAPI Swagger docs |
+| Chat graph visualizer | `http://agent-host.example:8001/graph` | Browser-rendered Mermaid graph |
+| Chat graph Mermaid | `http://agent-host.example:8001/graph/mermaid` | Raw Mermaid graph text |
+| Research graph Mermaid | `http://agent-host.example:8001/research/graph/mermaid` | Raw research graph text |
+| Neo4j Browser | `http://agent-host.example:7474` | Research memory graph UI |
+| Neo4j Bolt | `bolt://agent-host.example:7687` | Driver connection from host/LAN |
+| Langfuse UI | `http://agent-host.example:3001` | Observability and traces |
+| LiteLLM API | `http://agent-host.example:4010/v1` | Current LangGraph model gateway |
+| LiteLLM UI | `http://agent-host.example:4010/ui` | LiteLLM management UI |
+| vLLM API | `http://vllm-host.example:8000/v1` | Dedicated inference server |
 
 ## Project Locations
 
@@ -66,8 +73,9 @@ vLLM Inference Server on your-vllm-host.example:8000
 | `~/dev/agent-platform` | LangGraph app, Dockerfile, Compose file, docs, frontend |
 | `~/dev/agent-platform/frontend` | Static research frontend container |
 | `~/dev/agent-platform/data/research-runs` | JSON archive of saved research runs |
+| `~/dev/admin-portal` | Static landing page with links to admin UIs |
 | `~/dev/langfuse-platform` | Langfuse self-hosted Compose stack |
-| `~/local-litellm-linux-test` | Linux LiteLLM + Postgres setup on `your-vllm-host.example` |
+| `~/dev/litellm-platform` | LiteLLM + Postgres stack on the agent host |
 | `~/agent-platform` | Helper script symlink, if present |
 | `~/langfuse-platform` | Langfuse helper script symlink, if present |
 | `~/langfuse-credentials.txt` | Local Langfuse credentials, mode `600` |
@@ -83,6 +91,12 @@ Core agent stack in `~/dev/agent-platform`:
 | `research-neo4j` | Neo4j research memory graph | `7474`, `7687` |
 | `research-frontend` | Static web UI for the Research Assistant | `8080` |
 
+Admin portal stack in `~/dev/admin-portal`:
+
+| Container | Purpose | Port |
+| --- | --- | --- |
+| `admin-portal` | Static link page for service UIs | `80` |
+
 Langfuse stack in `~/dev/langfuse-platform`:
 
 | Container | Purpose | Port |
@@ -94,12 +108,12 @@ Langfuse stack in `~/dev/langfuse-platform`:
 | `langfuse-platform-minio-1` | Object storage for Langfuse | `9090` |
 | `langfuse-platform-redis-1` | Queue/cache for Langfuse | internal |
 
-Linux LiteLLM stack on `your-vllm-host.example`:
+Linux LiteLLM stack:
 
 | Container | Purpose | Port |
 | --- | --- | --- |
-| `litellm-linux-test` | LiteLLM proxy + UI | `4010` |
-| `litellm-db` | Postgres database for LiteLLM | internal |
+| `litellm-linux-test` | LiteLLM proxy + UI, using host networking | `4010` |
+| `litellm-db` | Postgres database for LiteLLM | `127.0.0.1:5433` |
 
 ## Environment Variables
 
@@ -108,14 +122,14 @@ The agent app reads `~/dev/agent-platform/.env`.
 Important variables:
 
 ```text
-LITELLM_BASE_URL=http://your-vllm-host.example:4010/v1
+LITELLM_BASE_URL=http://agent-host.example:4010/v1
 LITELLM_API_KEY=<LiteLLM key>
 MODEL_NAME=gemma-local
 LANGFUSE_PUBLIC_KEY=<Langfuse public key>
 LANGFUSE_SECRET_KEY=<Langfuse secret key>
-LANGFUSE_BASE_URL=http://host.docker.internal:3001
+LANGFUSE_BASE_URL=http://agent-host.example:3001
 TAVILY_API_KEY=<optional Tavily key>
-NEO4J_URI=bolt://neo4j:7687
+NEO4J_URI=bolt://127.0.0.1:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=change-me-neo4j-password
 ```
@@ -124,44 +138,53 @@ Do not paste active API keys into docs or chat. `.env.example` contains placehol
 
 ## Credentials And Login
 
-Langfuse credentials are stored on `omlx` in:
+Credentials should be generated locally and stored outside git. A practical layout is:
 
-```bash
-~/langfuse-credentials.txt
-```
-
-Use:
-
-```bash
-~/langfuse-platform creds
+```text
+~/dev/litellm-platform/ui-credentials.txt
+~/dev/langfuse-platform/credentials.txt
+~/dev/agent-platform/credentials.txt
 ```
 
 Neo4j local development login:
 
 ```text
-URL: http://localhost:7474
+URL: http://agent-host.example:7474
 Username: neo4j
 Password: change-me-neo4j-password
 ```
 
-LiteLLM UI credentials live with the Linux LiteLLM setup on `your-vllm-host.example`, in the local LiteLLM project files created there. Do not paste the LiteLLM master key into docs or logs.
+Do not paste the LiteLLM master key, generated UI passwords, Langfuse keys, Tavily key, or Neo4j password into docs or logs.
 
 ## Model Routing
 
 The LangGraph app calls LiteLLM using:
 
 ```text
-base_url: http://your-vllm-host.example:4010/v1
+base_url: http://agent-host.example:4010/v1
 model: gemma-local
 ```
 
-LiteLLM routes `gemma-local` to the Linux vLLM server:
+LiteLLM routes `gemma-local` to the dedicated vLLM server:
 
 ```text
-api_base: http://your-vllm-host:8000/v1
+api_base: http://vllm-host.example:8000/v1
 ```
 
 The vLLM server exposes a Gemma 31B model through an OpenAI-compatible API.
+
+## Network Source IP Policy
+
+On Linux, the deployment runs LiteLLM and the LangGraph API with `network_mode: host`. This is intentional.
+
+Normal Docker bridge networking makes LiteLLM see requests from Docker bridge/gateway addresses such as `172.x.x.x`. Host networking keeps this path on the host network stack, so LiteLLM logs show the real host/LAN source address for LangGraph calls.
+
+Support services remain containerized:
+
+- LiteLLM Postgres is published only on `127.0.0.1:5433`.
+- Redis remains published on `6379`.
+- Neo4j remains published on `7474` and `7687`.
+- Langfuse uses its own Compose network and published web port `3001`.
 
 ## LangGraph Workflows
 
@@ -461,7 +484,7 @@ Verified behavior as of this update:
 
 - FastAPI health returns `ok` and model `gemma-local`.
 - Research UI is available on port `8080`.
-- LangGraph app calls LiteLLM on `your-vllm-host.example:4010/v1`.
+- LangGraph app calls LiteLLM on `agent-host.example:4010/v1`.
 - Langfuse traces are enabled.
 - Redis checkpointing supports chat and interactive graph state.
 - Interactive research pauses at `human_review_checkpoint` and resumes with `Command(resume=...)`.
@@ -471,7 +494,7 @@ Verified behavior as of this update:
 
 ## Operational Notes And Caveats
 
-- Docker Desktop on macOS may block image pulls over non-interactive SSH because the keychain is locked. If a new public image cannot be pulled, pull it from an interactive terminal on `omlx` or use the existing manual image-load workaround.
+- Host networking is a Linux-focused deployment choice. If you run the stack on Docker Desktop, adjust the Compose files and URLs for that environment.
 - Neo4j memory writes are intentionally best-effort while JSON remains the fallback archive.
 - Tavily is preferred for search when configured; DuckDuckGo HTML is a fallback and can be less reliable.
 - The system is still local-dev oriented. Auth, user roles, and multi-user approval attribution are future work.

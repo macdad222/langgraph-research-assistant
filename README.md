@@ -40,6 +40,7 @@ Key capabilities:
 
 ```text
 agent-platform/       FastAPI + LangGraph app and frontend
+admin-portal/         Static landing page with links to service UIs
 langfuse-platform/    Sanitized Langfuse self-hosted Compose template
 litellm-linux/        Sanitized LiteLLM + Postgres template for a vLLM server
 docs/                 Security, operations, and sanitization notes
@@ -60,20 +61,42 @@ cp litellm-linux/config.example.yaml litellm-linux/config.yaml
 
 2. Replace every placeholder secret and host value.
 
-3. Start the agent platform:
+3. Start the separate stacks:
+
+```bash
+cd litellm-linux
+docker compose up -d
+
+cd ../langfuse-platform
+docker compose up -d
+
+cd ../agent-platform
+docker compose up -d --build
+
+cd ../admin-portal
+docker compose up -d
+```
+
+4. Open the admin portal:
+
+```text
+http://agent-host.example
+```
+
+For a single local development stack, you can still start just the agent platform:
 
 ```bash
 cd agent-platform
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
-4. Open the UI:
+Then open:
 
 ```text
 http://localhost:8080
 ```
 
-The original lab deployment used LAN hostnames like `localhost` and `your-vllm-host.example`. For your own environment, update `.env`, Compose files, and frontend API base URLs as needed.
+The Linux deployment templates run LiteLLM and the LangGraph API with host networking so LiteLLM logs see the real LAN host address instead of Docker bridge addresses such as `172.x.x.x`. For your own environment, update `.env`, Compose files, and frontend API base URLs as needed.
 
 ## Documentation
 
