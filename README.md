@@ -35,6 +35,7 @@ Key capabilities:
 - Web-based Research Assistant UI.
 - Chat-first Network Design Helper UI with downloadable design packages, FortiGate handoff JSON, audit files, raw run JSON, and FortiGate `.conf` exports.
 - Artifact-only FortiGate provisioning agent for draft designs, config packages, standards checks, frontier judge review, and human review.
+- Redis-first hybrid standards retrieval: full-text keyword search, vector search, Reciprocal Rank Fusion, and JSON fallback.
 - Standards ingestion for Markdown/text/config files, HTML, PDFs, Word docs, PowerPoint decks, and spreadsheets.
 - Standards requirement extraction and compliance matrix generation.
 - Polished Mermaid graph viewers with pan/zoom and SVG/Mermaid downloads.

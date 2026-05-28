@@ -95,6 +95,7 @@ Key features:
 - Chat-style design conversation.
 - Sidebar for customer/site/design context.
 - Standards search against uploaded company/Fortinet documents.
+- Redis-first hybrid retrieval using keyword search, vector search, and Reciprocal Rank Fusion.
 - Structured standard requirement extraction.
 - Compliance matrix mapping standards to design and FortiGate handoff evidence.
 - Downloadable design Markdown, raw run JSON, detailed audit Markdown, and FortiGate handoff JSON.
@@ -283,6 +284,8 @@ curl -sS http://localhost:8001/fortigate/standards/ingest \
 ```
 
 Supported input types include Markdown/text/config files, HTML, PDF, Word, PowerPoint, and Excel. The ingester skips Mac metadata files such as `.DS_Store`, `._*`, and `__MACOSX`.
+
+Ingestion writes the JSON fallback index and also attempts to build a Redis Search index with full-text and vector fields. Existing API routes still call `search_standards(...)`, which now uses Redis hybrid retrieval when available and falls back to JSON keyword search when Redis or embeddings are unavailable.
 
 ## Operational Notes
 

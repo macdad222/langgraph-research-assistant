@@ -15,7 +15,8 @@ The platform is a local agent stack for structured research and experimentation 
 - A web-based Research Assistant frontend.
 - A web-based Network Design Helper for standards-aware design conversations and FortiGate handoff payloads.
 - An artifact-only FortiGate provisioning agent for draft designs, validation, and review.
-- Standards ingestion and retrieval for Markdown/text/config, HTML, PDF, Word, PowerPoint, and Excel files.
+- Redis-first hybrid standards retrieval for Markdown/text/config, HTML, PDF, Word, PowerPoint, and Excel files.
+- Hybrid retrieval combines Redis full-text keyword search, Redis vector search, Reciprocal Rank Fusion, and JSON fallback.
 - Structured standards requirement extraction and a compliance matrix that maps standards to design, handoff, and generated config evidence.
 - Downloadable Network Design artifacts: design Markdown, FortiGate handoff JSON, FortiGate `.conf`, detailed audit Markdown, and raw run JSON.
 - Polished Mermaid graph viewers with pan/zoom plus SVG and Mermaid source downloads.
@@ -157,6 +158,14 @@ FORTIGATE_STANDARDS_DIR=/data/fortigate-standards/raw
 FORTIGATE_STANDARDS_INDEX=/data/fortigate-standards/index.json
 FORTIGATE_RUNS_DIR=/data/fortigate-runs
 NETWORK_DESIGN_RUNS_DIR=/data/network-design-runs
+STANDARDS_RETRIEVAL_BACKEND=redis_hybrid
+STANDARDS_REDIS_URL=redis://127.0.0.1:6379/0
+STANDARDS_REDIS_INDEX=idx:standards
+STANDARDS_REDIS_PREFIX=std:chunk:
+STANDARDS_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+STANDARDS_VECTOR_DIM=384
+STANDARDS_RERANK_ENABLED=false
+STANDARDS_RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
 
 Do not paste active API keys into docs or chat. `.env.example` contains placeholders/default local development values only.
@@ -405,7 +414,13 @@ The generated index is:
 /data/fortigate-standards/index.json
 ```
 
-Standards search is keyword/phrase based. The Network Design Helper adds a curation layer by extracting structured requirements from retrieved chunks, tagging them by topic and priority, then creating a compliance matrix against the generated design and handoff. When a FortiGate config is generated from the handoff, the downloadable audit file also maps requirements to CLI evidence where possible.
+Standards search is Redis-first hybrid retrieval. Ingestion writes the JSON index as a fallback, then attempts to create a Redis Search index with full-text fields and vector embeddings. Search runs keyword and vector retrieval, fuses ranked results with Reciprocal Rank Fusion, optionally reranks the fused candidates when `STANDARDS_RERANK_ENABLED=true`, and returns the same standards chunk shape used by the existing Network Design and FortiGate workflows.
+
+If Redis, RediSearch, or embeddings are unavailable, the app falls back to the original JSON keyword search. This keeps the standards workflow usable even when the hybrid index needs attention.
+
+The Network Design Helper adds a curation layer by extracting structured requirements from retrieved chunks, tagging them by topic and priority, then creating a compliance matrix against the generated design and handoff. When a FortiGate config is generated from the handoff, the downloadable audit file also maps requirements to CLI evidence where possible.
+
+Neo4j is not the first standards lookup engine in this version. Redis handles fast full-text and vector retrieval. Neo4j remains the right next layer for standards relationships, applicability, dependencies, exceptions, design-decision evidence, and long-term audit graph traceability.
 
 Standards ingestion endpoint:
 

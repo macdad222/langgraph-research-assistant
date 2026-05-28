@@ -429,6 +429,13 @@ Supported document types include:
 The standards library is used by both the Network Design Helper and the
 FortiGate agent.
 
+Standards lookup now uses Redis-first hybrid retrieval when available:
+
+  1. Redis full-text search finds exact terms.
+  2. Redis vector search finds semantic matches.
+  3. Reciprocal Rank Fusion combines both ranked lists.
+  4. JSON keyword search remains the fallback if Redis or embeddings are down.
+
 The Network Design Helper also extracts standard requirements and builds a
 compliance matrix.
 

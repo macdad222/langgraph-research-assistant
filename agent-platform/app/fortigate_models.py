@@ -10,6 +10,10 @@ class FortiGateStandardChunk(BaseModel):
     text: str
     source_path: str = ""
     score: int = 0
+    retrieval_backend: str = ""
+    keyword_rank: Optional[int] = None
+    vector_rank: Optional[int] = None
+    rrf_score: Optional[float] = None
 
 
 class FortiGateQuestion(BaseModel):
@@ -145,6 +149,7 @@ class FortiGateStandardsIngestResponse(BaseModel):
     index_path: str
     document_count: int
     chunk_count: int
+    redis_index: dict[str, Any] = Field(default_factory=dict)
 
 
 class FortiGateStandardsSearchResponse(BaseModel):

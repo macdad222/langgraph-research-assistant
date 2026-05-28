@@ -15,7 +15,8 @@ The platform is a local agent stack for structured research and experimentation 
 - A web-based Research Assistant frontend.
 - A web-based Network Design Helper for chat-first design conversations, standards retrieval, compliance matrix generation, and FortiGate handoff payloads.
 - An artifact-only FortiGate provisioning agent for draft designs, validation, model judge review, and CLI configuration artifacts.
-- Standards ingestion for Markdown/text/config files, HTML, PDFs, Word docs, PowerPoint decks, and spreadsheets.
+- Redis-first hybrid standards retrieval for Markdown/text/config files, HTML, PDFs, Word docs, PowerPoint decks, and spreadsheets.
+- Hybrid retrieval combines Redis full-text keyword search, Redis vector search, Reciprocal Rank Fusion, and JSON fallback.
 - Downloadable design packages, FortiGate `.conf` files, detailed audit Markdown files, raw run JSON, SVG graphs, and Mermaid source.
 - A static admin portal with links to all service UIs.
 - File-backed research run persistence in `/data/research-runs`.
@@ -155,6 +156,14 @@ FORTIGATE_STANDARDS_DIR=/data/fortigate-standards/raw
 FORTIGATE_STANDARDS_INDEX=/data/fortigate-standards/index.json
 FORTIGATE_RUNS_DIR=/data/fortigate-runs
 NETWORK_DESIGN_RUNS_DIR=/data/network-design-runs
+STANDARDS_RETRIEVAL_BACKEND=redis_hybrid
+STANDARDS_REDIS_URL=redis://127.0.0.1:6379/0
+STANDARDS_REDIS_INDEX=idx:standards
+STANDARDS_REDIS_PREFIX=std:chunk:
+STANDARDS_EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+STANDARDS_VECTOR_DIM=384
+STANDARDS_RERANK_ENABLED=false
+STANDARDS_RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
 
 Do not paste active API keys into docs or chat. `.env.example` contains placeholders/default local development values only.
@@ -371,6 +380,10 @@ The index is written to:
 ```
 
 Supported source types include Markdown/text/config files, HTML, PDF, Word, PowerPoint, and Excel. The ingester skips `.DS_Store`, `._*`, and `__MACOSX` files.
+
+Ingestion writes the JSON fallback index and attempts to create a Redis Search index with full-text fields plus vector embeddings. Standards search runs Redis keyword search and Redis vector search, fuses the ranked lists with Reciprocal Rank Fusion, optionally reranks fused candidates when `STANDARDS_RERANK_ENABLED=true`, and falls back to JSON keyword search if Redis or embeddings are unavailable.
+
+Neo4j is not the first standards lookup engine in this version. Redis handles fast retrieval; Neo4j remains the right next layer for standards relationships, applicability, exceptions, and long-term audit graph traceability.
 
 Rebuild the standards index with:
 

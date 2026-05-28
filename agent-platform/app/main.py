@@ -739,7 +739,16 @@ def render_network_design_markdown(response: NetworkDesignRunResponse) -> str:
     )
     if response.standards:
         for chunk in response.standards:
-            lines.append(f"- `{chunk.chunk_id}` from `{chunk.document}` ({chunk.topic})")
+            retrieval = chunk.retrieval_backend or "unknown"
+            ranks = []
+            if chunk.keyword_rank is not None:
+                ranks.append(f"keyword rank {chunk.keyword_rank}")
+            if chunk.vector_rank is not None:
+                ranks.append(f"vector rank {chunk.vector_rank}")
+            if chunk.rrf_score is not None:
+                ranks.append(f"RRF {chunk.rrf_score}")
+            rank_text = f"; {', '.join(ranks)}" if ranks else ""
+            lines.append(f"- `{chunk.chunk_id}` from `{chunk.document}` ({chunk.topic}); retrieval `{retrieval}`{rank_text}")
     else:
         lines.append("- No standards chunks retrieved.")
     lines.extend(["", "## Execution Trace", ""])

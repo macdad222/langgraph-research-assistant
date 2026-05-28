@@ -3,7 +3,9 @@ import html
 import json
 import os
 import re
+import struct
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -13,6 +15,15 @@ from app.fortigate_models import FortiGateStandardChunk
 
 DEFAULT_STANDARDS_DIR = Path(os.getenv("FORTIGATE_STANDARDS_DIR", "/data/fortigate-standards/raw"))
 DEFAULT_INDEX_PATH = Path(os.getenv("FORTIGATE_STANDARDS_INDEX", "/data/fortigate-standards/index.json"))
+STANDARDS_RETRIEVAL_BACKEND = os.getenv("STANDARDS_RETRIEVAL_BACKEND", "redis_hybrid").strip().lower()
+STANDARDS_REDIS_URL = os.getenv("STANDARDS_REDIS_URL", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"))
+STANDARDS_REDIS_INDEX = os.getenv("STANDARDS_REDIS_INDEX", "idx:standards")
+STANDARDS_REDIS_PREFIX = os.getenv("STANDARDS_REDIS_PREFIX", "std:chunk:")
+STANDARDS_EMBEDDING_MODEL = os.getenv("STANDARDS_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+STANDARDS_VECTOR_DIM = int(os.getenv("STANDARDS_VECTOR_DIM", "384"))
+STANDARDS_RRF_K = int(os.getenv("STANDARDS_RRF_K", "60"))
+STANDARDS_RERANK_ENABLED = os.getenv("STANDARDS_RERANK_ENABLED", "false").lower() == "true"
+STANDARDS_RERANK_MODEL = os.getenv("STANDARDS_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 SUPPORTED_SUFFIXES = {
     ".md",
     ".markdown",
@@ -30,6 +41,97 @@ SUPPORTED_SUFFIXES = {
     ".xlsx",
 }
 MAX_EXTRACTED_CHARS_PER_FILE = int(os.getenv("FORTIGATE_STANDARDS_MAX_FILE_CHARS", "500000"))
+
+
+def _as_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
+def _chunk_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _redis_client():
+    try:
+        import redis
+    except ImportError:
+        return None
+    try:
+        client = redis.Redis.from_url(STANDARDS_REDIS_URL, decode_responses=False)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _embedding_model():
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return None
+    try:
+        return SentenceTransformer(STANDARDS_EMBEDDING_MODEL)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _rerank_model():
+    if not STANDARDS_RERANK_ENABLED:
+        return None
+    try:
+        from sentence_transformers import CrossEncoder
+    except Exception:
+        return None
+    try:
+        return CrossEncoder(STANDARDS_RERANK_MODEL)
+    except Exception:
+        return None
+
+
+def _normalize_vector(values: list[float]) -> list[float]:
+    if not values:
+        return [0.0] * STANDARDS_VECTOR_DIM
+    if len(values) < STANDARDS_VECTOR_DIM:
+        values = [*values, *([0.0] * (STANDARDS_VECTOR_DIM - len(values)))]
+    elif len(values) > STANDARDS_VECTOR_DIM:
+        values = values[:STANDARDS_VECTOR_DIM]
+    norm = sum(item * item for item in values) ** 0.5
+    if norm <= 0:
+        return values
+    return [item / norm for item in values]
+
+
+def _hash_embedding(text: str) -> list[float]:
+    values = [0.0] * STANDARDS_VECTOR_DIM
+    tokens = re.findall(r"[a-zA-Z0-9_-]{3,}", text.lower())
+    for token in tokens:
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+        bucket = int.from_bytes(digest[:4], "big") % STANDARDS_VECTOR_DIM
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        values[bucket] += sign
+    return _normalize_vector(values)
+
+
+def _embed_text(text: str) -> list[float]:
+    model = _embedding_model()
+    if model is None:
+        return _hash_embedding(text)
+    try:
+        vector = model.encode(text[:8000], normalize_embeddings=True)
+    except Exception:
+        return _hash_embedding(text)
+    if hasattr(vector, "tolist"):
+        vector = vector.tolist()
+    return _normalize_vector([float(item) for item in vector])
+
+
+def _pack_vector(values: list[float]) -> bytes:
+    normalized = _normalize_vector(values)
+    return struct.pack(f"{len(normalized)}f", *normalized)
 
 
 def _chunk_id(document: str, ordinal: int, text: str) -> str:
@@ -165,6 +267,85 @@ def _read_document_text(path: Path) -> str:
     return ""
 
 
+def _create_redis_index(client: Any) -> None:
+    try:
+        from redis.commands.search.field import TagField, TextField, VectorField
+        try:
+            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+        except Exception:
+            from redis.commands.search.index_definition import IndexDefinition, IndexType
+    except Exception as exc:
+        raise RuntimeError("redis-py RediSearch helpers are unavailable.") from exc
+    try:
+        client.ft(STANDARDS_REDIS_INDEX).dropindex(delete_documents=False)
+    except Exception:
+        pass
+    schema = (
+        TextField("chunk_id"),
+        TextField("document"),
+        TagField("topic"),
+        TextField("source_path"),
+        TextField("text"),
+        TextField("hash"),
+        VectorField(
+            "embedding",
+            "HNSW",
+            {
+                "TYPE": "FLOAT32",
+                "DIM": STANDARDS_VECTOR_DIM,
+                "DISTANCE_METRIC": "COSINE",
+            },
+        ),
+    )
+    client.ft(STANDARDS_REDIS_INDEX).create_index(
+        schema,
+        definition=IndexDefinition(prefix=[STANDARDS_REDIS_PREFIX], index_type=IndexType.HASH),
+    )
+
+
+def _clear_redis_standard_chunks(client: Any) -> None:
+    batch: list[bytes] = []
+    for key in client.scan_iter(f"{STANDARDS_REDIS_PREFIX}*"):
+        batch.append(key)
+        if len(batch) >= 500:
+            client.delete(*batch)
+            batch = []
+    if batch:
+        client.delete(*batch)
+
+
+def _index_standards_in_redis(chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    if STANDARDS_RETRIEVAL_BACKEND not in {"redis_hybrid", "redis", "hybrid"}:
+        return {"enabled": False, "indexed_count": 0, "error": "Redis hybrid retrieval disabled."}
+    client = _redis_client()
+    if client is None:
+        return {"enabled": False, "indexed_count": 0, "error": "Redis is unavailable."}
+    try:
+        _clear_redis_standard_chunks(client)
+        _create_redis_index(client)
+        pipe = client.pipeline(transaction=False)
+        for chunk in chunks:
+            key = f"{STANDARDS_REDIS_PREFIX}{chunk['chunk_id']}"
+            embedding = _pack_vector(_embed_text(f"{chunk.get('document', '')}\n{chunk.get('topic', '')}\n{chunk.get('text', '')}"))
+            pipe.hset(
+                key,
+                mapping={
+                    "chunk_id": chunk.get("chunk_id", ""),
+                    "document": chunk.get("document", ""),
+                    "topic": chunk.get("topic", "general"),
+                    "source_path": chunk.get("source_path", ""),
+                    "text": chunk.get("text", ""),
+                    "hash": chunk.get("hash", ""),
+                    "embedding": embedding,
+                },
+            )
+        if chunks:
+            pipe.execute()
+        return {"enabled": True, "indexed_count": len(chunks), "index_name": STANDARDS_REDIS_INDEX}
+    except Exception as exc:
+        return {"enabled": False, "indexed_count": 0, "error": str(exc)}
+
+
 def ingest_standards(source_dir: str | Path = DEFAULT_STANDARDS_DIR, index_path: str | Path = DEFAULT_INDEX_PATH) -> dict[str, Any]:
     source = Path(source_dir)
     index = Path(index_path)
@@ -192,17 +373,20 @@ def ingest_standards(source_dir: str | Path = DEFAULT_STANDARDS_DIR, index_path:
                         "topic": _topic_for_text(path, chunk_text),
                         "text": chunk_text,
                         "source_path": str(path),
+                        "hash": _chunk_hash(chunk_text),
                         "score": 0,
                     }
                 )
 
     index.parent.mkdir(parents=True, exist_ok=True)
     index.write_text(json.dumps({"chunks": chunks}, indent=2))
+    redis_index = _index_standards_in_redis(chunks)
     return {
         "source_dir": str(source),
         "index_path": str(index),
         "document_count": document_count,
         "chunk_count": len(chunks),
+        "redis_index": redis_index,
     }
 
 
@@ -217,7 +401,7 @@ def load_standard_chunks(index_path: str | Path = DEFAULT_INDEX_PATH) -> list[Fo
     return [FortiGateStandardChunk(**item) for item in data.get("chunks", []) if isinstance(item, dict)]
 
 
-def search_standards(query: str, limit: int = 8, index_path: str | Path = DEFAULT_INDEX_PATH) -> list[FortiGateStandardChunk]:
+def _keyword_search_json(query: str, limit: int = 8, index_path: str | Path = DEFAULT_INDEX_PATH) -> list[FortiGateStandardChunk]:
     terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9_-]{3,}", query)]
     phrase = " ".join(terms)
     chunks = load_standard_chunks(index_path)
@@ -247,9 +431,158 @@ def search_standards(query: str, limit: int = 8, index_path: str | Path = DEFAUL
             if matched_terms == len(terms):
                 score += 20
         if score:
-            scored.append(chunk.model_copy(update={"score": score}))
+            scored.append(chunk.model_copy(update={"score": score, "retrieval_backend": "json_keyword"}))
     scored.sort(key=lambda item: item.score, reverse=True)
     return scored[: max(1, min(limit, 25))]
+
+
+def _redis_chunk_from_doc(doc: Any, updates: dict[str, Any] | None = None) -> FortiGateStandardChunk:
+    payload = {
+        "chunk_id": _as_text(getattr(doc, "chunk_id", "")),
+        "document": _as_text(getattr(doc, "document", "")),
+        "topic": _as_text(getattr(doc, "topic", "general")) or "general",
+        "text": _as_text(getattr(doc, "text", "")),
+        "source_path": _as_text(getattr(doc, "source_path", "")),
+        "score": 0,
+    }
+    payload.update(updates or {})
+    return FortiGateStandardChunk(**payload)
+
+
+def _escape_redis_term(term: str) -> str:
+    return re.sub(r"([@{}\\[\\]\"'():|&!\\-~*?\\\\/])", r"\\\1", term)
+
+
+def _redis_fulltext_search(client: Any, query: str, candidate_count: int) -> list[FortiGateStandardChunk]:
+    try:
+        from redis.commands.search.query import Query
+    except Exception:
+        return []
+    terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9_-]{3,}", query)][:16]
+    if not terms:
+        terms = ["fortigate", "standards"]
+    query_text = " | ".join(_escape_redis_term(term) for term in terms)
+    try:
+        redis_query = (
+            Query(query_text)
+            .return_fields("chunk_id", "document", "topic", "source_path", "text")
+            .paging(0, candidate_count)
+            .dialect(2)
+        )
+        result = client.ft(STANDARDS_REDIS_INDEX).search(redis_query)
+    except Exception:
+        return []
+    return [
+        _redis_chunk_from_doc(doc, {"keyword_rank": rank, "retrieval_backend": "redis_keyword"})
+        for rank, doc in enumerate(getattr(result, "docs", []), start=1)
+        if _as_text(getattr(doc, "chunk_id", ""))
+    ]
+
+
+def _redis_vector_search(client: Any, query: str, candidate_count: int) -> list[FortiGateStandardChunk]:
+    try:
+        from redis.commands.search.query import Query
+    except Exception:
+        return []
+    try:
+        vector = _pack_vector(_embed_text(query or "fortigate firewall network standards"))
+        redis_query = (
+            Query(f"*=>[KNN {candidate_count} @embedding $vector AS vector_distance]")
+            .sort_by("vector_distance")
+            .return_fields("chunk_id", "document", "topic", "source_path", "text", "vector_distance")
+            .paging(0, candidate_count)
+            .dialect(2)
+        )
+        result = client.ft(STANDARDS_REDIS_INDEX).search(redis_query, query_params={"vector": vector})
+    except Exception:
+        return []
+    return [
+        _redis_chunk_from_doc(doc, {"vector_rank": rank, "retrieval_backend": "redis_vector"})
+        for rank, doc in enumerate(getattr(result, "docs", []), start=1)
+        if _as_text(getattr(doc, "chunk_id", ""))
+    ]
+
+
+def _rrf_fuse(
+    keyword_results: list[FortiGateStandardChunk],
+    vector_results: list[FortiGateStandardChunk],
+    limit: int,
+) -> list[FortiGateStandardChunk]:
+    by_id: dict[str, FortiGateStandardChunk] = {}
+    ranks: dict[str, dict[str, int]] = {}
+    for rank, chunk in enumerate(keyword_results, start=1):
+        by_id.setdefault(chunk.chunk_id, chunk)
+        ranks.setdefault(chunk.chunk_id, {})["keyword_rank"] = rank
+    for rank, chunk in enumerate(vector_results, start=1):
+        by_id.setdefault(chunk.chunk_id, chunk)
+        ranks.setdefault(chunk.chunk_id, {})["vector_rank"] = rank
+
+    fused: list[FortiGateStandardChunk] = []
+    for chunk_id, chunk in by_id.items():
+        item_ranks = ranks.get(chunk_id, {})
+        rrf_score = sum(1.0 / (STANDARDS_RRF_K + rank) for rank in item_ranks.values())
+        fused.append(
+            chunk.model_copy(
+                update={
+                    "score": int(rrf_score * 100000),
+                    "retrieval_backend": "redis_hybrid",
+                    "keyword_rank": item_ranks.get("keyword_rank"),
+                    "vector_rank": item_ranks.get("vector_rank"),
+                    "rrf_score": round(rrf_score, 6),
+                }
+            )
+        )
+    fused.sort(key=lambda item: (item.rrf_score or 0, item.score), reverse=True)
+    return fused[: max(1, min(limit, 25))]
+
+
+def _rerank_standards(query: str, chunks: list[FortiGateStandardChunk], limit: int) -> list[FortiGateStandardChunk]:
+    model = _rerank_model()
+    if model is None:
+        return chunks[:limit]
+    try:
+        pairs = [(query, chunk.text[:4000]) for chunk in chunks]
+        scores = model.predict(pairs)
+    except Exception:
+        return chunks[:limit]
+    reranked: list[FortiGateStandardChunk] = []
+    for rank, (chunk, raw_score) in enumerate(
+        sorted(zip(chunks, scores, strict=False), key=lambda item: float(item[1]), reverse=True),
+        start=1,
+    ):
+        reranked.append(
+            chunk.model_copy(
+                update={
+                    "score": int(float(raw_score) * 1000),
+                    "retrieval_backend": "redis_hybrid_reranked",
+                    "rrf_score": chunk.rrf_score,
+                }
+            )
+        )
+        if rank >= limit:
+            break
+    return reranked
+
+
+def hybrid_search_standards(query: str, limit: int = 8, index_path: str | Path = DEFAULT_INDEX_PATH) -> list[FortiGateStandardChunk]:
+    if STANDARDS_RETRIEVAL_BACKEND not in {"redis_hybrid", "redis", "hybrid"}:
+        return _keyword_search_json(query, limit=limit, index_path=index_path)
+    client = _redis_client()
+    if client is None:
+        return _keyword_search_json(query, limit=limit, index_path=index_path)
+    candidate_count = max(limit * 4, 30)
+    keyword_results = _redis_fulltext_search(client, query, candidate_count)
+    vector_results = _redis_vector_search(client, query, candidate_count)
+    fused = _rrf_fuse(keyword_results, vector_results, limit=max(limit, 8))
+    if not fused:
+        return _keyword_search_json(query, limit=limit, index_path=index_path)
+    if STANDARDS_RERANK_ENABLED:
+        fused = _rerank_standards(query, fused, limit=max(limit, 8))
+    return fused[: max(1, min(limit, 25))]
+
+
+def search_standards(query: str, limit: int = 8, index_path: str | Path = DEFAULT_INDEX_PATH) -> list[FortiGateStandardChunk]:
+    return hybrid_search_standards(query, limit=limit, index_path=index_path)
 
 
 def _requirement_keywords(text: str, topic: str) -> list[str]:

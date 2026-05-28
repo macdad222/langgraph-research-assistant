@@ -12,3 +12,5 @@ httpx
 beautifulsoup4
 neo4j
 pypdf
+numpy
+sentence-transformers

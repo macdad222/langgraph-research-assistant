@@ -134,6 +134,8 @@ curl -sS http://localhost:8001/fortigate/standards/ingest \
 curl -sS 'http://localhost:8001/network-design/standards/search?q=sd-wan&limit=5'
 ```
 
+The standards ingester writes `/data/fortigate-standards/index.json` as a fallback and builds a Redis Search index named `idx:standards` when Redis hybrid retrieval is enabled. Search uses Redis full-text results plus Redis vector results, fused with Reciprocal Rank Fusion. Optional cross-encoder reranking is controlled by `STANDARDS_RERANK_ENABLED`. If Redis or embeddings are unavailable, the app falls back to JSON keyword search.
+
 Saved run archives:
 
 ```text
