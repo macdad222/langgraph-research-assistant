@@ -878,14 +878,13 @@ async def lifespan(app: FastAPI):
             human_review_interrupt=True,
             memory_retriever=retrieve_research_memory,
         )
-        judge_model = llm
-        if app.state.fortigate_judge_model_name != model_name:
-            judge_model = ChatOpenAI(
-                model=app.state.fortigate_judge_model_name,
-                base_url=base_url,
-                api_key=api_key,
-                temperature=0,
-            )
+        judge_model = ChatOpenAI(
+            model=app.state.fortigate_judge_model_name,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=0,
+            extra_body={"metadata": {"agentic_gateway_openclaw_passthrough": True}},
+        )
         app.state.fortigate_judge_model = judge_model
         app.state.fortigate_graph = build_fortigate_graph(
             llm,
