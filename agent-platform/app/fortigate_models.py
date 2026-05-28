@@ -77,6 +77,15 @@ class FortiGateReviewRequest(BaseModel):
     decision: str = Field(..., pattern="^(approved|needs_work|rejected)$")
     reviewer_notes: str = ""
     selected_issues: list[str] = Field(default_factory=list)
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class FortiGateReviewQuestion(BaseModel):
+    question_id: str
+    source: str = ""
+    question: str
+    context: str = ""
+    required: bool = True
 
 
 class FortiGateJudgeReport(BaseModel):
@@ -102,6 +111,7 @@ class FortiGateHumanReview(BaseModel):
     decision: str = "pending"
     reviewer_notes: str = ""
     selected_issues: list[str] = Field(default_factory=list)
+    answers: dict[str, str] = Field(default_factory=dict)
     reviewed_at: str = ""
 
 
@@ -134,6 +144,7 @@ class FortiGateRunResponse(BaseModel):
     standards_report: FortiGateValidationReport = Field(default_factory=FortiGateValidationReport)
     risk_report: FortiGateValidationReport = Field(default_factory=FortiGateValidationReport)
     judge_report: FortiGateJudgeReport = Field(default_factory=FortiGateJudgeReport)
+    review_questions: list[FortiGateReviewQuestion] = Field(default_factory=list)
     human_review: Optional[FortiGateHumanReview] = None
     execution_trace: list[dict[str, Any]] = Field(default_factory=list)
     markdown: str = ""

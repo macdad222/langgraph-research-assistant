@@ -112,6 +112,7 @@ The FortiGate agent is artifact-only. It can:
 - Run deterministic validation and standards checks.
 - Run a Qwen-configured model judge before human review.
 - Regenerate draft config artifacts when the judge finds more than three review items.
+- Generate human review questions from judge findings, accept reviewer answers, revise the config, and send it back through validation and Qwen judging.
 - Save packages under `/data/fortigate-runs`.
 
 No live device changes are made.

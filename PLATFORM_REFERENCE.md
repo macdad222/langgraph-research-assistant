@@ -393,7 +393,7 @@ intake_request
   -> finalize_package
 ```
 
-The generated CLI is a draft artifact only. It is intended for engineering review, validation, and change planning before any operational use. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. When the judge finds more than three review items, the graph regenerates the config artifacts from scratch instead of making a small patch.
+The generated CLI is a draft artifact only. It is intended for engineering review, validation, and change planning before any operational use. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. When the judge finds more than three review items, the graph regenerates the config artifacts from scratch instead of making a small patch. Saved FortiGate runs expose human review questions derived from the judge report; reviewer answers update the config artifacts, re-run validation/standards/risk checks, and send the package back to the judge. The package is marked final only when the judge returns `pass`.
 
 ## Standards Library
 

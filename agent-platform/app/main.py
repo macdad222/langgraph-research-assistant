@@ -23,6 +23,7 @@ from app.fortigate_models import (
     FortiGateHumanReview,
     FortiGateInteractiveResponse,
     FortiGateJudgeReport,
+    FortiGateReviewQuestion,
     FortiGateReviewRequest,
     FortiGateRunResponse,
     FortiGateRunSummary,
@@ -31,6 +32,7 @@ from app.fortigate_models import (
     FortiGateStandardsSearchResponse,
     FortiGateValidationReport,
 )
+from app.fortigate_policy import check_standards_compliance, review_risk, validate_config_artifacts
 from app.graph import build_graph, initial_messages
 from app.memory import Neo4jResearchMemory
 from app.network_design import build_network_design_graph
@@ -221,6 +223,26 @@ def _bullet_list(items: list[str]) -> str:
     if not items:
         return "- None"
     return "\n".join(f"- {item}" for item in items)
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end <= start:
+        return {}
+    try:
+        return json.loads(stripped[start : end + 1])
+    except json.JSONDecodeError:
+        return {}
 
 
 def render_research_markdown(response: ResearchResponse) -> str:
@@ -552,9 +574,32 @@ def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
         "### Human Reviewer Focus",
         bullets(response.judge_report.human_reviewer_focus),
         "",
-        "## Standards Evidence",
+        "## Human Review Questions",
         "",
     ]
+    if response.review_questions:
+        for question in response.review_questions:
+            lines.extend(
+                [
+                    f"### `{question.question_id}`",
+                    "",
+                    f"- Source: `{question.source}`",
+                    f"- Required: `{question.required}`",
+                    f"- Context: {question.context or 'None'}",
+                    "",
+                    question.question,
+                    "",
+                ]
+            )
+    else:
+        lines.append("- No human review questions generated.")
+    lines.extend(
+        [
+            "",
+        "## Standards Evidence",
+        "",
+        ]
+    )
     if response.standards:
         for chunk in response.standards:
             lines.extend([f"- `{chunk.chunk_id}` from `{chunk.document}` ({chunk.topic})"])
@@ -571,12 +616,62 @@ def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
                 f"- Notes: {response.human_review.reviewer_notes or 'None'}",
                 "### Selected Issues",
                 bullets(response.human_review.selected_issues),
+                "### Answers",
+                "```json",
+                json.dumps(response.human_review.answers, indent=2),
+                "```",
             ]
         )
     return "\n".join(lines)
 
 
+def _judge_items(report: FortiGateJudgeReport) -> list[tuple[str, str]]:
+    fields = (
+        ("blocking_issues", report.blocking_issues),
+        ("warnings", report.warnings),
+        ("standards_concerns", report.standards_concerns),
+        ("config_risks", report.config_risks),
+        ("missing_questions", report.missing_questions),
+        ("recommended_revisions", report.recommended_revisions),
+        ("human_reviewer_focus", report.human_reviewer_focus),
+    )
+    items: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for source, values in fields:
+        for value in values:
+            text = str(value).strip()
+            fingerprint = f"{source}:{text.lower()}"
+            if text and fingerprint not in seen:
+                seen.add(fingerprint)
+                items.append((source, text))
+    return items
+
+
+def build_fortigate_review_questions(report: FortiGateJudgeReport) -> list[FortiGateReviewQuestion]:
+    questions: list[FortiGateReviewQuestion] = []
+    for index, (source, text) in enumerate(_judge_items(report), start=1):
+        if source == "missing_questions":
+            prompt = text.rstrip("?") + "?"
+        elif source == "recommended_revisions":
+            prompt = f"Should this recommended revision be applied? If yes, provide the exact design/config direction: {text}"
+        elif source == "human_reviewer_focus":
+            prompt = f"Please review this focus area and provide approval notes or correction details: {text}"
+        else:
+            prompt = f"How should the draft address this {source.replace('_', ' ')} item: {text}"
+        questions.append(
+            FortiGateReviewQuestion(
+                question_id=f"judge-{index:02d}",
+                source=source,
+                question=prompt,
+                context=text,
+                required=source in {"blocking_issues", "standards_concerns", "config_risks", "missing_questions"},
+            )
+        )
+    return questions[:12]
+
+
 def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_name: str) -> FortiGateRunResponse:
+    judge_report = FortiGateJudgeReport(**result.get("judge_report", {}))
     response = FortiGateRunResponse(
         run_id=str(uuid4()),
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -594,12 +689,14 @@ def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_
         validation_report=FortiGateValidationReport(**result.get("validation_report", {})),
         standards_report=FortiGateValidationReport(**result.get("standards_report", {})),
         risk_report=FortiGateValidationReport(**result.get("risk_report", {})),
-        judge_report=FortiGateJudgeReport(**result.get("judge_report", {})),
+        judge_report=judge_report,
+        review_questions=build_fortigate_review_questions(judge_report),
         human_review=(
             FortiGateHumanReview(
                 decision=result.get("human_review_decision", "pending"),
                 reviewer_notes=result.get("human_review_notes", ""),
                 selected_issues=result.get("human_selected_issues", []),
+                answers=result.get("human_review_answers", {}),
                 reviewed_at=datetime.now(timezone.utc).isoformat(),
             )
             if result.get("human_review_decision")
@@ -620,7 +717,10 @@ def load_fortigate_run(run_id: str) -> FortiGateRunResponse:
     path = _fortigate_run_path(run_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="FortiGate run not found")
-    return FortiGateRunResponse.model_validate_json(path.read_text())
+    run = FortiGateRunResponse.model_validate_json(path.read_text())
+    if not run.review_questions and run.judge_report.verdict != "pass":
+        run.review_questions = build_fortigate_review_questions(run.judge_report)
+    return run
 
 
 def summarize_fortigate_run(response: FortiGateRunResponse) -> FortiGateRunSummary:
@@ -634,6 +734,74 @@ def summarize_fortigate_run(response: FortiGateRunResponse) -> FortiGateRunSumma
         judge_verdict=response.judge_report.verdict,
         validation_passed=response.validation_report.passed,
     )
+
+
+def _fortigate_judge_packet(run: FortiGateRunResponse) -> dict[str, Any]:
+    return {
+        "intake": run.intake.model_dump(),
+        "current_config_summary": run.current_config_summary.model_dump(),
+        "logical_design": run.logical_design,
+        "fortigate_design": run.fortigate_design,
+        "change_impact": run.change_impact,
+        "config_artifacts": run.config_artifacts,
+        "validation_report": run.validation_report.model_dump(),
+        "standards_report": run.standards_report.model_dump(),
+        "risk_report": run.risk_report.model_dump(),
+        "standards": [item.model_dump() for item in run.standards],
+    }
+
+
+def _fortigate_policy_state(run: FortiGateRunResponse) -> dict[str, Any]:
+    return {
+        "intake": run.intake.model_dump(),
+        "current_config_summary": run.current_config_summary.model_dump(),
+        "standards": [item.model_dump() for item in run.standards],
+        "config_artifacts": run.config_artifacts,
+    }
+
+
+async def _revise_fortigate_config_from_review(run: FortiGateRunResponse, review: FortiGateHumanReview) -> None:
+    response = await app.state.fortigate_generation_model.ainvoke(
+        [
+            SystemMessage(
+                content=(
+                    "Return only JSON with key config_artifacts. Update the FortiGate draft artifacts using the human "
+                    "review answers and the prior judge report. Preserve artifact-only safety labels, standards citations, "
+                    "rollback details, and full CLI context. Do not apply changes to any device."
+                )
+            ),
+            HumanMessage(
+                content=json.dumps(
+                    {
+                        "intake": run.intake.model_dump(),
+                        "current_config_summary": run.current_config_summary.model_dump(),
+                        "logical_design": run.logical_design,
+                        "fortigate_design": run.fortigate_design,
+                        "change_impact": run.change_impact,
+                        "previous_config_artifacts": run.config_artifacts,
+                        "validation_report": run.validation_report.model_dump(),
+                        "standards_report": run.standards_report.model_dump(),
+                        "risk_report": run.risk_report.model_dump(),
+                        "judge_report": run.judge_report.model_dump(),
+                        "review_questions": [item.model_dump() for item in run.review_questions],
+                        "human_review": review.model_dump(),
+                        "standards": [item.model_dump() for item in run.standards],
+                    },
+                    indent=2,
+                )
+            ),
+        ]
+    )
+    data = _extract_json_object(str(response.content))
+    artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data
+    if not isinstance(artifacts, dict) or not artifacts:
+        raise HTTPException(status_code=502, detail="Model did not return revised FortiGate config artifacts.")
+    artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
+    run.config_artifacts = artifacts
+    policy_state = _fortigate_policy_state(run)
+    run.validation_report = validate_config_artifacts(policy_state)
+    run.standards_report = check_standards_compliance(policy_state)
+    run.risk_report = review_risk(policy_state)
 
 
 def list_fortigate_runs(limit: int = 20) -> list[FortiGateRunSummary]:
@@ -871,6 +1039,7 @@ async def lifespan(app: FastAPI):
 
         app.state.graph = build_graph(llm, checkpointer)
         app.state.network_design_chat_model = llm
+        app.state.fortigate_generation_model = llm
         app.state.research_graph = build_research_graph(llm, checkpointer, memory_retriever=retrieve_research_memory)
         app.state.interactive_research_graph = build_research_graph(
             llm,
@@ -1858,24 +2027,14 @@ async def fortigate_change_analyze(request: FortiGateChangeAnalysisRequest):
 @app.post("/fortigate/runs/{run_id}/judge", response_model=FortiGateRunResponse)
 async def fortigate_run_judge(run_id: str):
     run = load_fortigate_run(run_id)
-    packet = {
-        "intake": run.intake.model_dump(),
-        "current_config_summary": run.current_config_summary.model_dump(),
-        "logical_design": run.logical_design,
-        "fortigate_design": run.fortigate_design,
-        "change_impact": run.change_impact,
-        "config_artifacts": run.config_artifacts,
-        "validation_report": run.validation_report.model_dump(),
-        "standards_report": run.standards_report.model_dump(),
-        "risk_report": run.risk_report.model_dump(),
-        "standards": [item.model_dump() for item in run.standards],
-    }
     judge = await run_frontier_judge(
         app.state.fortigate_judge_model,
-        packet,
+        _fortigate_judge_packet(run),
         judge_model_name=app.state.fortigate_judge_model_name,
     )
     run.judge_report = judge
+    run.review_questions = build_fortigate_review_questions(judge)
+    run.status = "approved_artifact" if judge.verdict == "pass" else ("blocked" if judge.verdict == "block" else "needs_review")
     run.markdown = render_fortigate_markdown(run)
     save_fortigate_run(run)
     return run
@@ -1906,18 +2065,32 @@ async def fortigate_run(run_id: str):
 @app.post("/fortigate/runs/{run_id}/review", response_model=FortiGateRunResponse)
 async def fortigate_run_review(run_id: str, request: FortiGateReviewRequest):
     run = load_fortigate_run(run_id)
-    run.human_review = FortiGateHumanReview(
+    review = FortiGateHumanReview(
         decision=request.decision,
         reviewer_notes=request.reviewer_notes,
         selected_issues=request.selected_issues,
+        answers=request.answers,
         reviewed_at=datetime.now(timezone.utc).isoformat(),
     )
-    if request.decision == "approved":
-        run.status = "approved_artifact"
-    elif request.decision == "rejected":
+    run.human_review = review
+    if request.decision == "rejected":
         run.status = "rejected"
+    elif request.answers or request.decision == "needs_work":
+        await _revise_fortigate_config_from_review(run, review)
+        judge = await run_frontier_judge(
+            app.state.fortigate_judge_model,
+            _fortigate_judge_packet(run),
+            judge_model_name=app.state.fortigate_judge_model_name,
+        )
+        run.judge_report = judge
+        run.review_questions = [] if judge.verdict == "pass" else build_fortigate_review_questions(judge)
+        run.status = "approved_artifact" if judge.verdict == "pass" else ("blocked" if judge.verdict == "block" else "needs_review")
+    elif request.decision == "approved" and run.judge_report.verdict == "pass":
+        run.status = "approved_artifact"
+        run.review_questions = []
     else:
         run.status = "needs_review"
+        run.review_questions = build_fortigate_review_questions(run.judge_report)
     run.markdown = render_fortigate_markdown(run)
     save_fortigate_run(run)
     return run

@@ -156,6 +156,7 @@
     const copyButton = document.getElementById("copy-markdown");
     document.getElementById("graph-link").href = `${apiBase}/fortigate/graph/mermaid`;
     let currentMarkdown = "";
+    let currentRun = null;
 
     function lines(id) {
       return document.getElementById(id).value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
@@ -177,6 +178,7 @@
     }
 
     function renderRun(run) {
+      currentRun = run;
       currentMarkdown = run.markdown || "";
       copyButton.disabled = !currentMarkdown;
       document.getElementById("status-pill").textContent = `Status: ${run.status}`;
@@ -186,10 +188,85 @@
       document.getElementById("validation-pill").className = `pill ${run.validation_report?.passed ? "ok" : "bad"}`;
       outputEl.innerHTML = `
         <div class="section"><h2>Final Package</h2><pre>${escapeHtml(run.markdown || "")}</pre></div>
+        ${reviewQuestionsHtml(run)}
         <div class="section"><h2>Draft CLI</h2><pre>${escapeHtml(run.config_artifacts?.cli_config || "")}</pre></div>
       `;
       rawEl.textContent = JSON.stringify(run, null, 2);
     }
+
+    function reviewQuestionsHtml(run) {
+      const questions = run.review_questions || [];
+      if (!questions.length && run.judge_report?.verdict !== "pass") {
+        return `<div class="section"><h2>Human Review</h2><p class="muted">No judge questions were generated for this run.</p></div>`;
+      }
+      if (!questions.length) {
+        return `<div class="section"><h2>Human Review</h2><p class="muted">Judge passed. This package can be treated as final review-ready output.</p></div>`;
+      }
+      return `
+        <div class="section">
+          <h2>Human Review From Judge</h2>
+          <p class="muted">Answer the judge questions. Submitting will update the draft config, re-run validation, and send it back to the Qwen judge. If Qwen passes it, the package is marked final.</p>
+          <div class="field">
+            <label for="review-decision">Review decision</label>
+            <select id="review-decision">
+              <option value="needs_work">Answer questions and update config</option>
+              <option value="approved">Approve only if judge already passed</option>
+              <option value="rejected">Reject package</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="review-notes">Reviewer notes</label>
+            <textarea id="review-notes" placeholder="Overall human review notes"></textarea>
+          </div>
+          ${questions.map((question) => `
+            <div class="field">
+              <label for="answer-${escapeHtml(question.question_id)}">${escapeHtml(question.question_id)} - ${escapeHtml(question.source || "judge")}</label>
+              <div class="muted">${escapeHtml(question.question || "")}</div>
+              ${question.context ? `<div class="muted">Context: ${escapeHtml(question.context)}</div>` : ""}
+              <textarea id="answer-${escapeHtml(question.question_id)}" data-question-id="${escapeHtml(question.question_id)}" placeholder="Answer or correction for this item"></textarea>
+            </div>
+          `).join("")}
+          <button id="submit-review">Submit Human Review And Re-Judge</button>
+        </div>
+      `;
+    }
+
+    document.addEventListener("click", async (event) => {
+      if (event.target?.id !== "submit-review") return;
+      if (!currentRun?.run_id) return;
+      const button = event.target;
+      button.disabled = true;
+      statusEl.textContent = "Applying human review, updating config, and re-running judge...";
+      const answers = {};
+      document.querySelectorAll("[data-question-id]").forEach((input) => {
+        if (input.value.trim()) answers[input.dataset.questionId] = input.value.trim();
+      });
+      try {
+        const response = await fetch(`${apiBase}/fortigate/runs/${currentRun.run_id}/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            decision: document.getElementById("review-decision")?.value || "needs_work",
+            reviewer_notes: document.getElementById("review-notes")?.value || "",
+            selected_issues: (currentRun.review_questions || []).map((question) => question.context || question.question).filter(Boolean),
+            answers
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          statusEl.textContent = `Error: ${data.detail || response.statusText}`;
+          rawEl.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        renderRun(data);
+        statusEl.textContent = `Human review applied. Judge verdict: ${data.judge_report?.verdict || "n/a"}. Status: ${data.status}.`;
+      } catch (error) {
+        statusEl.textContent = `Browser error: ${error.message}`;
+        rawEl.textContent = String(error.stack || error);
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
