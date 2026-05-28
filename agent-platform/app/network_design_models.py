@@ -40,6 +40,29 @@ class NetworkDesignValidationReport(BaseModel):
     checks: list[str] = Field(default_factory=list)
 
 
+class StandardRequirement(BaseModel):
+    requirement_id: str
+    topic: str = "general"
+    requirement: str
+    source_document: str
+    source_chunk_id: str
+    source_excerpt: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    priority: str = "medium"
+
+
+class ComplianceMatrixItem(BaseModel):
+    requirement_id: str
+    topic: str = "general"
+    requirement: str
+    source_document: str
+    status: str = "needs_review"
+    design_evidence: list[str] = Field(default_factory=list)
+    handoff_evidence: list[str] = Field(default_factory=list)
+    config_evidence: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
 class FortiGateHandoffPayload(BaseModel):
     request_type: str = "new_build"
     site_name: str = ""
@@ -79,10 +102,12 @@ class NetworkDesignRunResponse(BaseModel):
     intake: NetworkDesignIntake
     messages: list[NetworkDesignMessage] = Field(default_factory=list)
     standards: list[FortiGateStandardChunk] = Field(default_factory=list)
+    standard_requirements: list[StandardRequirement] = Field(default_factory=list)
     requirements_summary: dict[str, Any] = Field(default_factory=dict)
     missing_questions: list[str] = Field(default_factory=list)
     design_package: dict[str, Any] = Field(default_factory=dict)
     fortigate_handoff: FortiGateHandoffPayload = Field(default_factory=FortiGateHandoffPayload)
+    compliance_matrix: list[ComplianceMatrixItem] = Field(default_factory=list)
     validation_report: NetworkDesignValidationReport = Field(default_factory=NetworkDesignValidationReport)
     execution_trace: list[dict[str, Any]] = Field(default_factory=list)
     markdown: str = ""

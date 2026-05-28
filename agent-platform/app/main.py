@@ -682,28 +682,61 @@ def render_network_design_markdown(response: NetworkDesignRunResponse) -> str:
         "",
         bullets(response.missing_questions),
         "",
-        "## FortiGate Handoff Payload",
-        "",
-        "```json",
-        json.dumps(response.fortigate_handoff.model_dump(), indent=2),
-        "```",
-        "",
-        "## Validation Report",
-        "",
-        f"- Passed: `{response.validation_report.passed}`",
-        "",
-        "### Blocking Issues",
-        bullets(response.validation_report.blocking_issues),
-        "",
-        "### Warnings",
-        bullets(response.validation_report.warnings),
-        "",
-        "### Checks",
-        bullets(response.validation_report.checks),
-        "",
-        "## Standards Evidence",
+        "## Extracted Standard Requirements",
         "",
     ]
+    if response.standard_requirements:
+        lines.append("| ID | Priority | Topic | Source | Requirement |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for requirement in response.standard_requirements:
+            text = requirement.requirement.replace("|", "\\|")
+            source = requirement.source_document.replace("|", "\\|")
+            lines.append(f"| `{requirement.requirement_id}` | {requirement.priority} | {requirement.topic} | {source} | {text} |")
+    else:
+        lines.append("- No structured requirements extracted.")
+    lines.extend(
+        [
+            "",
+            "## Compliance Matrix",
+            "",
+        ]
+    )
+    if response.compliance_matrix:
+        lines.append("| Requirement | Status | Design Evidence | Handoff Evidence | Rationale |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for item in response.compliance_matrix:
+            design = "<br>".join(item.design_evidence).replace("|", "\\|") or "None"
+            handoff = "<br>".join(item.handoff_evidence).replace("|", "\\|") or "None"
+            rationale = item.rationale.replace("|", "\\|")
+            lines.append(f"| `{item.requirement_id}` | {item.status} | {design} | {handoff} | {rationale} |")
+    else:
+        lines.append("- No compliance matrix generated.")
+    lines.extend(
+        [
+            "",
+            "## FortiGate Handoff Payload",
+            "",
+            "```json",
+            json.dumps(response.fortigate_handoff.model_dump(), indent=2),
+            "```",
+            "",
+            "## Validation Report",
+            "",
+            f"- Passed: `{response.validation_report.passed}`",
+            "",
+            "### Blocking Issues",
+            bullets(response.validation_report.blocking_issues),
+            "",
+            "### Warnings",
+            bullets(response.validation_report.warnings),
+            "",
+            "### Checks",
+            bullets(response.validation_report.checks),
+            "",
+            "## Standards Evidence",
+            "",
+        ]
+    )
     if response.standards:
         for chunk in response.standards:
             lines.append(f"- `{chunk.chunk_id}` from `{chunk.document}` ({chunk.topic})")
@@ -731,10 +764,12 @@ def network_design_response_from_state(result: dict[str, Any], thread_id: str, m
         intake=result.get("intake", {}),
         messages=result.get("messages", []),
         standards=result.get("standards", []),
+        standard_requirements=result.get("standard_requirements", []),
         requirements_summary=result.get("requirements_summary", {}),
         missing_questions=result.get("missing_questions", []),
         design_package=result.get("design_package", {}),
         fortigate_handoff=FortiGateHandoffPayload(**result.get("fortigate_handoff", {})),
+        compliance_matrix=result.get("compliance_matrix", []),
         validation_report=NetworkDesignValidationReport(**result.get("validation_report", {})),
         execution_trace=result.get("execution_trace", []),
     )

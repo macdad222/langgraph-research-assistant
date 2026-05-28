@@ -449,9 +449,48 @@
       return (items || []).length ? items.map((item) => `- ${item}`).join("\n") : "- None";
     }
 
+    function evidenceSnippets(haystack, keywords, limit = 4) {
+      const lines = String(haystack || "")
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const needles = (keywords || []).map((item) => String(item).toLowerCase()).filter((item) => item.length > 2);
+      const evidence = [];
+      for (const line of lines) {
+        const lower = line.toLowerCase();
+        if (needles.some((keyword) => lower.includes(keyword))) {
+          evidence.push(line.slice(0, 320));
+        }
+        if (evidence.length >= limit) break;
+      }
+      return evidence;
+    }
+
+    function complianceMatrixWithConfigEvidence() {
+      const requirements = currentRun?.standard_requirements || [];
+      const matrix = currentRun?.compliance_matrix || [];
+      const cli = fortigateCli();
+      return matrix.map((item) => {
+        const requirement = requirements.find((candidate) => candidate.requirement_id === item.requirement_id);
+        const configEvidence = evidenceSnippets(cli, requirement?.keywords || []);
+        let status = item.status || "needs_review";
+        let rationale = item.rationale || "";
+        if (configEvidence.length && status === "mapped") {
+          status = "mapped_with_config";
+          rationale = `${rationale} Configuration evidence was also found in the generated FortiGate CLI.`;
+        } else if (configEvidence.length && status !== "mapped") {
+          status = "partial_with_config";
+          rationale = `${rationale} Configuration evidence was found, but the design/handoff mapping still needs review.`;
+        }
+        return { ...item, config_evidence: configEvidence, status, rationale };
+      });
+    }
+
     function buildAuditMarkdown() {
       if (!currentRun) return "# Network Design Audit\n\nNo design run is loaded.";
       const standards = currentRun.standards || [];
+      const standardRequirements = currentRun.standard_requirements || [];
+      const complianceMatrix = complianceMatrixWithConfigEvidence();
       const validation = currentRun.validation_report || {};
       const fg = currentFortiGateRun || null;
       const fgValidation = fg?.validation_report || {};
@@ -495,6 +534,29 @@
           "```",
           "",
         ].join("\n")).join("\n") : "- No standards chunks were attached to this run.",
+        "",
+        "## Extracted Standard Requirements",
+        "",
+        standardRequirements.length ? [
+          "| ID | Priority | Topic | Source | Requirement |",
+          "| --- | --- | --- | --- | --- |",
+          ...standardRequirements.map((requirement) => `| \`${requirement.requirement_id}\` | ${requirement.priority} | ${requirement.topic} | ${String(requirement.source_document || "").replaceAll("|", "\\|")} | ${String(requirement.requirement || "").replaceAll("|", "\\|")} |`)
+        ].join("\n") : "- No structured requirements were extracted.",
+        "",
+        "## Compliance Matrix",
+        "",
+        complianceMatrix.length ? [
+          "| Requirement | Status | Design Evidence | Handoff Evidence | Config Evidence | Rationale |",
+          "| --- | --- | --- | --- | --- | --- |",
+          ...complianceMatrix.map((item) => [
+            `\`${item.requirement_id}\``,
+            item.status,
+            (item.design_evidence || []).join("<br>").replaceAll("|", "\\|") || "None",
+            (item.handoff_evidence || []).join("<br>").replaceAll("|", "\\|") || "None",
+            (item.config_evidence || []).join("<br>").replaceAll("|", "\\|") || "None",
+            String(item.rationale || "").replaceAll("|", "\\|")
+          ].join(" | ")).map((row) => `| ${row} |`)
+        ].join("\n") : "- No compliance matrix was generated.",
         "",
         "## Requirements Summary",
         "",
@@ -706,6 +768,8 @@
       resultsEl.textContent = JSON.stringify({
         design_package: run.design_package || {},
         missing_questions: run.missing_questions || [],
+        standard_requirements: run.standard_requirements || [],
+        compliance_matrix: run.compliance_matrix || [],
         fortigate_handoff: run.fortigate_handoff || {},
         export_files: {
           design_markdown: `${fileBase()}-design-package.md`,
@@ -726,6 +790,7 @@
         status: run.status,
         judge_verdict: run.judge_report?.verdict,
         validation_passed: run.validation_report?.passed,
+        compliance_matrix: complianceMatrixWithConfigEvidence(),
         config_file: `${fileBase()}-fortigate.conf`,
         audit_file: `${fileBase()}-audit.md`
       }, null, 2);

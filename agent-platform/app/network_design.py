@@ -10,7 +10,7 @@ from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import END, StateGraph
 
 from app.network_design_models import NetworkDesignIntake, NetworkDesignMessage, NetworkDesignValidationReport
-from app.standards import search_standards
+from app.standards import extract_standard_requirements, search_standards
 
 
 class NetworkDesignState(TypedDict, total=False):
@@ -18,10 +18,12 @@ class NetworkDesignState(TypedDict, total=False):
     messages: list[dict[str, Any]]
     standards_query: str
     standards: list[dict[str, Any]]
+    standard_requirements: list[dict[str, Any]]
     requirements_summary: dict[str, Any]
     missing_questions: list[str]
     design_package: dict[str, Any]
     fortigate_handoff: dict[str, Any]
+    compliance_matrix: list[dict[str, Any]]
     validation_report: dict[str, Any]
     status: str
     execution_trace: list[dict[str, Any]]
@@ -95,6 +97,58 @@ def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _flatten_text(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, indent=2)
+    return str(value or "")
+
+
+def _evidence_snippets(haystack: str, keywords: list[str], limit: int = 3) -> list[str]:
+    lines = [line.strip() for line in re.split(r"\n+|(?<=[.!?])\s+", haystack) if line.strip()]
+    evidence: list[str] = []
+    lowered_keywords = [keyword.lower() for keyword in keywords if len(keyword) > 2]
+    for line in lines:
+        lower = line.lower()
+        if any(keyword in lower for keyword in lowered_keywords):
+            evidence.append(line[:320])
+        if len(evidence) >= limit:
+            break
+    return evidence
+
+
+def build_compliance_matrix(state: NetworkDesignState) -> list[dict[str, Any]]:
+    design_text = _flatten_text(state.get("design_package", {}))
+    handoff_text = _flatten_text(state.get("fortigate_handoff", {}))
+    matrix: list[dict[str, Any]] = []
+    for requirement in state.get("standard_requirements", []):
+        keywords = [str(item) for item in requirement.get("keywords", [])]
+        design_evidence = _evidence_snippets(design_text, keywords)
+        handoff_evidence = _evidence_snippets(handoff_text, keywords)
+        if design_evidence and handoff_evidence:
+            status = "mapped"
+            rationale = "Requirement has evidence in both the design package and FortiGate handoff."
+        elif design_evidence or handoff_evidence:
+            status = "partial"
+            rationale = "Requirement has some evidence, but should be reviewed for completeness."
+        else:
+            status = "needs_review"
+            rationale = "No direct keyword evidence found; human review should verify applicability."
+        matrix.append(
+            {
+                "requirement_id": requirement.get("requirement_id", ""),
+                "topic": requirement.get("topic", "general"),
+                "requirement": requirement.get("requirement", ""),
+                "source_document": requirement.get("source_document", ""),
+                "status": status,
+                "design_evidence": design_evidence,
+                "handoff_evidence": handoff_evidence,
+                "config_evidence": [],
+                "rationale": rationale,
+            }
+        )
+    return matrix
+
+
 def _fallback_requirements(intake: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "business_goal": intake.get("design_goal", ""),
@@ -152,6 +206,13 @@ def validate_network_design(state: NetworkDesignState) -> NetworkDesignValidatio
         checks.append(f"Retrieved {len(state.get('standards', []))} standards chunks.")
     if state.get("missing_questions"):
         warnings.append("The design has open clarification questions.")
+    if not state.get("standard_requirements"):
+        warnings.append("No structured standard requirements were extracted from retrieved standards.")
+    else:
+        checks.append(f"Extracted {len(state.get('standard_requirements', []))} structured standard requirements.")
+    if state.get("compliance_matrix"):
+        mapped = sum(1 for item in state.get("compliance_matrix", []) if item.get("status") == "mapped")
+        checks.append(f"Compliance matrix created with {mapped} fully mapped requirement(s).")
 
     return NetworkDesignValidationReport(passed=not blocking, blocking_issues=blocking, warnings=warnings, checks=checks)
 
@@ -186,6 +247,18 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
         started_at, started_perf = _trace_start()
         chunks = [chunk.model_dump() for chunk in search_standards(state.get("standards_query", ""), limit=10)]
         return _trace_update(state, {"standards": chunks}, "retrieve_standards", started_at, started_perf, f"Retrieved {len(chunks)} standards chunk(s).")
+
+    async def curate_standards(state: NetworkDesignState) -> NetworkDesignState:
+        started_at, started_perf = _trace_start()
+        requirements = extract_standard_requirements(state.get("standards", []), max_requirements=24)
+        return _trace_update(
+            state,
+            {"standard_requirements": requirements},
+            "curate_standards",
+            started_at,
+            started_perf,
+            f"Extracted {len(requirements)} structured standard requirement(s).",
+        )
 
     async def summarize_requirements(state: NetworkDesignState) -> NetworkDesignState:
         started_at, started_perf = _trace_start()
@@ -251,6 +324,7 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
                             "requirements_summary": state.get("requirements_summary", {}),
                             "missing_questions": state.get("missing_questions", []),
                             "standards": _standards_payload(state.get("standards", [])),
+                            "standard_requirements": state.get("standard_requirements", []),
                         },
                         indent=2,
                     )
@@ -336,6 +410,19 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
                 handoff[key] = [str(item) for item in value if str(item).strip()]
         return _trace_update(state, {"fortigate_handoff": handoff}, "build_fortigate_handoff", started_at, started_perf, "Prepared FortiGate handoff payload.")
 
+    async def check_compliance(state: NetworkDesignState) -> NetworkDesignState:
+        started_at, started_perf = _trace_start()
+        matrix = build_compliance_matrix(state)
+        needs_review = sum(1 for item in matrix if item.get("status") == "needs_review")
+        return _trace_update(
+            state,
+            {"compliance_matrix": matrix},
+            "check_compliance",
+            started_at,
+            started_perf,
+            f"Created compliance matrix with {needs_review} requirement(s) needing review.",
+        )
+
     async def validate_design(state: NetworkDesignState) -> NetworkDesignState:
         started_at, started_perf = _trace_start()
         report = validate_network_design(state).model_dump()
@@ -352,20 +439,24 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
     graph = StateGraph(NetworkDesignState)
     graph.add_node("intake_conversation", intake_conversation)
     graph.add_node("retrieve_standards", retrieve_standards)
+    graph.add_node("curate_standards", curate_standards)
     graph.add_node("summarize_requirements", summarize_requirements)
     graph.add_node("identify_gaps", identify_gaps)
     graph.add_node("build_design_package", build_design_package)
     graph.add_node("build_fortigate_handoff", build_fortigate_handoff)
+    graph.add_node("check_compliance", check_compliance)
     graph.add_node("validate_design", validate_design)
     graph.add_node("finalize_package", finalize_package)
 
     graph.set_entry_point("intake_conversation")
     graph.add_edge("intake_conversation", "retrieve_standards")
-    graph.add_edge("retrieve_standards", "summarize_requirements")
+    graph.add_edge("retrieve_standards", "curate_standards")
+    graph.add_edge("curate_standards", "summarize_requirements")
     graph.add_edge("summarize_requirements", "identify_gaps")
     graph.add_edge("identify_gaps", "build_design_package")
     graph.add_edge("build_design_package", "build_fortigate_handoff")
-    graph.add_edge("build_fortigate_handoff", "validate_design")
+    graph.add_edge("build_fortigate_handoff", "check_compliance")
+    graph.add_edge("check_compliance", "validate_design")
     graph.add_edge("validate_design", "finalize_package")
     graph.add_edge("finalize_package", END)
     return graph.compile(checkpointer=checkpointer)

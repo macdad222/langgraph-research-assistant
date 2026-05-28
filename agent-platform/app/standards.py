@@ -252,6 +252,96 @@ def search_standards(query: str, limit: int = 8, index_path: str | Path = DEFAUL
     return scored[: max(1, min(limit, 25))]
 
 
+def _requirement_keywords(text: str, topic: str) -> list[str]:
+    words = [word.lower() for word in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text)]
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "from",
+        "are",
+        "should",
+        "must",
+        "will",
+        "need",
+        "needs",
+        "using",
+        "use",
+        "can",
+        "not",
+        "all",
+        "any",
+    }
+    topic_terms = {
+        "sdwan": ["sd-wan", "wan", "sla", "failover", "steering", "performance"],
+        "firewall_policy": ["firewall", "policy", "zone", "security", "internet", "guest"],
+        "interfaces": ["interface", "vlan", "subnet", "gateway", "dhcp"],
+        "routing": ["route", "routing", "bgp", "ospf", "static"],
+        "nat": ["nat", "vip", "snat", "dnat"],
+        "vpn": ["vpn", "ipsec", "tunnel"],
+        "ha": ["ha", "backup", "redundant", "failover"],
+        "logging": ["log", "logging", "syslog", "snmp", "fortianalyzer", "monitoring"],
+    }
+    selected = [word for word in words if word not in stop and len(word) > 3]
+    merged = [*topic_terms.get(topic, []), *selected]
+    return list(dict.fromkeys(merged))[:12]
+
+
+def _requirement_priority(text: str) -> str:
+    lower = text.lower()
+    if any(term in lower for term in ("must", "always", "required", "do not", "never", "ensure", "critical")):
+        return "high"
+    if any(term in lower for term in ("should", "recommended", "best practice", "prefer")):
+        return "medium"
+    return "low"
+
+
+def extract_standard_requirements(chunks: list[FortiGateStandardChunk | dict[str, Any]], max_requirements: int = 24) -> list[dict[str, Any]]:
+    requirements: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    normative = re.compile(
+        r"\b(must|should|required|requires|requirement|ensure|always|never|do not|be sure|need to|needs to|recommended|best practice)\b",
+        re.IGNORECASE,
+    )
+    for raw in chunks:
+        chunk = raw if isinstance(raw, dict) else raw.model_dump()
+        text = str(chunk.get("text") or "")
+        document = str(chunk.get("document") or "unknown")
+        chunk_id = str(chunk.get("chunk_id") or "")
+        topic = str(chunk.get("topic") or "general")
+        sentences = [part.strip(" -•\t\n") for part in re.split(r"(?<=[.!?])\s+|\n+", text) if part.strip()]
+        candidates = [sentence for sentence in sentences if normative.search(sentence)]
+        if not candidates and topic in {"logging", "sdwan", "firewall_policy", "routing", "interfaces"}:
+            candidates = sentences[:2]
+        for sentence in candidates[:3]:
+            cleaned = re.sub(r"\s+", " ", sentence).strip()
+            if len(cleaned) < 35 or len(cleaned) > 420:
+                continue
+            fingerprint = re.sub(r"[^a-z0-9]+", " ", cleaned.lower())[:180]
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            requirement_id = f"STD-{len(requirements) + 1:03d}"
+            requirements.append(
+                {
+                    "requirement_id": requirement_id,
+                    "topic": topic,
+                    "requirement": cleaned,
+                    "source_document": document,
+                    "source_chunk_id": chunk_id,
+                    "source_excerpt": text[:1000],
+                    "keywords": _requirement_keywords(cleaned, topic),
+                    "priority": _requirement_priority(cleaned),
+                }
+            )
+            if len(requirements) >= max_requirements:
+                return requirements
+    return requirements
+
+
 def retrieve_fortigate_standards(payload: dict[str, Any], limit: int = 10) -> list[FortiGateStandardChunk]:
     query_parts = [
         str(payload.get("business_intent") or ""),
