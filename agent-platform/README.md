@@ -1,6 +1,6 @@
 # Agent Platform
 
-Local AI agent platform running on a Linux agent host with LangGraph, LiteLLM, Redis, Langfuse, Neo4j, and a web Research Assistant.
+Local AI agent platform running on a Linux agent host with LangGraph, LiteLLM, Redis, Langfuse, Neo4j, a web Research Assistant, a Network Design Helper, and an artifact-only FortiGate provisioning agent.
 
 For the full architecture and operations guide, see [`PLATFORM_REFERENCE.md`](PLATFORM_REFERENCE.md).
 
@@ -10,6 +10,8 @@ For the full architecture and operations guide, see [`PLATFORM_REFERENCE.md`](PL
 | --- | --- | --- |
 | Admin Portal | `http://agent-host.example` | Landing page for service UIs |
 | Research Assistant | `http://agent-host.example:8080` | Main web UI |
+| Network Design Helper | `http://agent-host.example:8080/network-design` | Chat-first design assistant with standards, handoff, compliance matrix, and exports |
+| FortiGate Agent | `http://agent-host.example:8080/fortigate` | Draft FortiGate design/config package generation |
 | Agent API | `http://agent-host.example:8001` | FastAPI + LangGraph |
 | Neo4j Browser | `http://agent-host.example:7474` | Research memory graph |
 | Langfuse | `http://agent-host.example:3001` | Traces and observability |
@@ -71,6 +73,47 @@ Key features:
 - True LangGraph interrupt/resume workflow for interactive review.
 - Neo4j-backed research memory retrieval before web search.
 
+## What The Network Design Helper Does
+
+The Network Design Helper is a chat-first workflow for network design engineers:
+
+```text
+intake_conversation
+  -> retrieve_standards
+  -> curate_standards
+  -> summarize_requirements
+  -> identify_gaps
+  -> build_design_package
+  -> build_fortigate_handoff
+  -> check_compliance
+  -> validate_design
+  -> finalize_package
+```
+
+Key features:
+
+- Chat-style design conversation.
+- Sidebar for customer/site/design context.
+- Standards search against uploaded company/Fortinet documents.
+- Structured standard requirement extraction.
+- Compliance matrix mapping standards to design and FortiGate handoff evidence.
+- Downloadable design Markdown, raw run JSON, detailed audit Markdown, and FortiGate handoff JSON.
+- Optional call into the FortiGate agent to generate a downloadable draft `.conf`.
+
+## What The FortiGate Agent Does
+
+The FortiGate agent is artifact-only. It can:
+
+- Parse existing FortiGate configs.
+- Retrieve standards evidence.
+- Build logical and FortiGate-specific designs.
+- Generate draft CLI artifacts.
+- Run deterministic validation and standards checks.
+- Run a model judge before human review.
+- Save packages under `/data/fortigate-runs`.
+
+No live device changes are made.
+
 ## Human In The Loop
 
 There are two human review paths:
@@ -127,7 +170,12 @@ Platform:
 GET  /health
 GET  /graph
 GET  /graph/mermaid
+GET  /research/graph
 GET  /research/graph/mermaid
+GET  /network-design/graph
+GET  /network-design/graph/mermaid
+GET  /fortigate/graph
+GET  /fortigate/graph/mermaid
 ```
 
 Chat:
@@ -146,6 +194,32 @@ POST /research/runs/{run_id}/review
 POST /research/runs/{run_id}/follow-up
 POST /research/interactive
 POST /research/interactive/{thread_id}/review
+```
+
+Network Design:
+
+```text
+POST /network-design/message
+POST /network-design/chat
+GET  /network-design/runs
+GET  /network-design/runs/{run_id}
+GET  /network-design/standards/search?q=...
+```
+
+FortiGate:
+
+```text
+POST /fortigate/design
+POST /fortigate/interactive
+POST /fortigate/interactive/{thread_id}/resume
+POST /fortigate/configs/parse
+POST /fortigate/changes/analyze
+POST /fortigate/runs/{run_id}/judge
+POST /fortigate/runs/{run_id}/review
+POST /fortigate/standards/ingest
+GET  /fortigate/standards/search?q=...
+GET  /fortigate/runs
+GET  /fortigate/runs/{run_id}
 ```
 
 Memory:
@@ -192,8 +266,23 @@ curl -sS 'http://localhost:8001/memory/research/backlog?limit=10'
 
 - Redis stores LangGraph checkpoints.
 - JSON files in `/data/research-runs` remain the fallback archive.
+- JSON files in `/data/network-design-runs` store Network Design Helper runs.
+- JSON files in `/data/fortigate-runs` store FortiGate packages.
+- `/data/fortigate-standards/index.json` stores the standards search index.
 - Neo4j stores queryable research memory.
 - Langfuse stores traces and observability data.
+
+## Standards Library
+
+Place source documents under `/data/fortigate-standards/raw`, then rebuild the index with:
+
+```bash
+curl -sS http://localhost:8001/fortigate/standards/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"source_dir":"/data/fortigate-standards/raw"}'
+```
+
+Supported input types include Markdown/text/config files, HTML, PDF, Word, PowerPoint, and Excel. The ingester skips Mac metadata files such as `.DS_Store`, `._*`, and `__MACOSX`.
 
 ## Operational Notes
 

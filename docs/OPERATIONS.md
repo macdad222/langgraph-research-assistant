@@ -8,7 +8,7 @@ The deployment is split into separate Compose stacks:
 admin-portal/       Static landing page on port 80
 litellm-linux/      LiteLLM + Postgres
 langfuse-platform/  Langfuse + Postgres + ClickHouse + Redis + MinIO
-agent-platform/     LangGraph API + Redis + Neo4j + Research UI
+agent-platform/     LangGraph API + Redis + Neo4j + Research/Network Design/FortiGate UIs
 ```
 
 LiteLLM and the LangGraph API use host networking in the Linux template. This keeps the LangGraph-to-LiteLLM request path on the host/LAN network stack, so LiteLLM access logs show the real host/LAN source address instead of Docker bridge addresses like `172.x.x.x`.
@@ -49,6 +49,27 @@ Research UI:
 http://localhost:8080
 ```
 
+Network Design Helper:
+
+```text
+http://localhost:8080/network-design
+```
+
+FortiGate Agent:
+
+```text
+http://localhost:8080/fortigate
+```
+
+Graph viewers:
+
+```text
+http://localhost:8001/graph
+http://localhost:8001/research/graph
+http://localhost:8001/network-design/graph
+http://localhost:8001/fortigate/graph
+```
+
 Neo4j Browser:
 
 ```text
@@ -86,6 +107,8 @@ LiteLLM itself listens directly on host port `4010` using `network_mode: host`.
 
 - Agent API: `8001`
 - Research UI: `8080`
+- Network Design Helper: `8080/network-design`
+- FortiGate Agent: `8080/fortigate`
 - Redis: `6379`
 - Neo4j Browser: `7474`
 - Neo4j Bolt: `7687`
@@ -100,6 +123,24 @@ curl http://localhost:8001/health
 curl http://localhost:8001/memory/health
 curl http://localhost:3001/api/public/health
 curl http://localhost:4010/health/liveliness
+```
+
+Standards index:
+
+```bash
+curl -sS http://localhost:8001/fortigate/standards/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"source_dir":"/data/fortigate-standards/raw"}'
+curl -sS 'http://localhost:8001/network-design/standards/search?q=sd-wan&limit=5'
+```
+
+Saved run archives:
+
+```text
+/data/research-runs
+/data/network-design-runs
+/data/fortigate-runs
+/data/fortigate-standards/index.json
 ```
 
 Check LiteLLM source IP logging:

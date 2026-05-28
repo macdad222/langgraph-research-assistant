@@ -1,6 +1,6 @@
 # Admin Portal
 
-Simple static landing page for the local AI agent stack.
+Simple static landing page for the local AI agent stack. It links to the Research Assistant, Network Design Helper, FortiGate Agent, graph viewers, LiteLLM, Langfuse, Neo4j, and API docs.
 
 ## Start
 

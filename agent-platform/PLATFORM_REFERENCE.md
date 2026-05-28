@@ -1,6 +1,6 @@
 # AI Agent Platform Reference
 
-Last updated: 2026-05-22
+Last updated: 2026-05-27
 
 This document captures the current Linux-oriented agent platform deployment using sanitized example hostnames.
 
@@ -13,8 +13,14 @@ The platform is a local agent stack for structured research and experimentation 
 - Redis-backed LangGraph checkpoints.
 - Langfuse tracing.
 - A web-based Research Assistant frontend.
+- A web-based Network Design Helper for chat-first design conversations, standards retrieval, compliance matrix generation, and FortiGate handoff payloads.
+- An artifact-only FortiGate provisioning agent for draft designs, validation, model judge review, and CLI configuration artifacts.
+- Standards ingestion for Markdown/text/config files, HTML, PDFs, Word docs, PowerPoint decks, and spreadsheets.
+- Downloadable design packages, FortiGate `.conf` files, detailed audit Markdown files, raw run JSON, SVG graphs, and Mermaid source.
 - A static admin portal with links to all service UIs.
 - File-backed research run persistence in `/data/research-runs`.
+- File-backed Network Design Helper run persistence in `/data/network-design-runs`.
+- File-backed FortiGate run persistence in `/data/fortigate-runs`.
 - Neo4j research memory for prior runs, sources, claims, reviews, policy reports, and follow-up chains.
 - Human-in-the-loop review controls, including true LangGraph `interrupt()` / `Command(resume=...)` flow.
 
@@ -29,13 +35,16 @@ Admin Portal
   |
   | http://agent-host.example:8080
   v
-Research Assistant Frontend
+Research / Network Design / FortiGate Frontends
   |
   | http://agent-host.example:8001
   v
 FastAPI + LangGraph App
   |-- Redis checkpoints
   |-- JSON run archive: /data/research-runs
+  |-- JSON run archive: /data/network-design-runs
+  |-- JSON run archive: /data/fortigate-runs
+  |-- Standards index: /data/fortigate-standards/index.json
   |-- Neo4j research memory
   |-- Langfuse tracing callback
   |
@@ -54,11 +63,18 @@ vLLM Inference Server on vllm-host.example:8000
 | --- | --- | --- |
 | Admin portal | `http://agent-host.example` | Landing page for service links |
 | Research Assistant UI | `http://agent-host.example:8080` | Main end-user frontend |
+| Network Design Helper UI | `http://agent-host.example:8080/network-design` | Standards-aware network design chat, package generation, exports |
+| FortiGate Agent UI | `http://agent-host.example:8080/fortigate` | Artifact-only FortiGate provisioning/change planning |
 | Agent API health | `http://agent-host.example:8001/health` | FastAPI health check |
 | Agent API docs | `http://agent-host.example:8001/docs` | FastAPI Swagger docs |
 | Chat graph visualizer | `http://agent-host.example:8001/graph` | Browser-rendered Mermaid graph |
+| Research graph visualizer | `http://agent-host.example:8001/research/graph` | Rendered graph viewer with zoom/export |
+| Network Design graph visualizer | `http://agent-host.example:8001/network-design/graph` | Rendered graph viewer with zoom/export |
+| FortiGate graph visualizer | `http://agent-host.example:8001/fortigate/graph` | Rendered graph viewer with zoom/export |
 | Chat graph Mermaid | `http://agent-host.example:8001/graph/mermaid` | Raw Mermaid graph text |
 | Research graph Mermaid | `http://agent-host.example:8001/research/graph/mermaid` | Raw research graph text |
+| Network Design graph Mermaid | `http://agent-host.example:8001/network-design/graph/mermaid` | Raw Network Design Helper graph text |
+| FortiGate graph Mermaid | `http://agent-host.example:8001/fortigate/graph/mermaid` | Raw FortiGate graph text |
 | Neo4j Browser | `http://agent-host.example:7474` | Research memory graph UI |
 | Neo4j Bolt | `bolt://agent-host.example:7687` | Driver connection from host/LAN |
 | Langfuse UI | `http://agent-host.example:3001` | Observability and traces |
@@ -73,6 +89,9 @@ vLLM Inference Server on vllm-host.example:8000
 | `~/dev/agent-platform` | LangGraph app, Dockerfile, Compose file, docs, frontend |
 | `~/dev/agent-platform/frontend` | Static research frontend container |
 | `~/dev/agent-platform/data/research-runs` | JSON archive of saved research runs |
+| `~/dev/agent-platform/data/network-design-runs` | JSON archive of saved Network Design Helper runs |
+| `~/dev/agent-platform/data/fortigate-runs` | JSON archive of saved FortiGate package runs |
+| `~/dev/agent-platform/data/fortigate-standards` | Uploaded standards source files and generated standards index |
 | `~/dev/admin-portal` | Static landing page with links to admin UIs |
 | `~/dev/langfuse-platform` | Langfuse self-hosted Compose stack |
 | `~/dev/litellm-platform` | LiteLLM + Postgres stack on the agent host |
@@ -132,6 +151,10 @@ TAVILY_API_KEY=<optional Tavily key>
 NEO4J_URI=bolt://127.0.0.1:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=change-me-neo4j-password
+FORTIGATE_STANDARDS_DIR=/data/fortigate-standards/raw
+FORTIGATE_STANDARDS_INDEX=/data/fortigate-standards/index.json
+FORTIGATE_RUNS_DIR=/data/fortigate-runs
+NETWORK_DESIGN_RUNS_DIR=/data/network-design-runs
 ```
 
 Do not paste active API keys into docs or chat. `.env.example` contains placeholders/default local development values only.
@@ -290,6 +313,73 @@ The frontend supports:
 - Execution trace view.
 - Neo4j memory panel with health, search, current-run memory, backlog, dedup, and audit.
 
+## Network Design Helper
+
+Open:
+
+```text
+http://localhost:8080/network-design
+```
+
+The Network Design Helper is a chat-first workflow for network design engineers. It retrieves uploaded standards, extracts structured requirements, summarizes the design discussion, builds a design package, prepares a FortiGate handoff payload, and creates a compliance matrix.
+
+Workflow shape:
+
+```text
+intake_conversation
+  -> retrieve_standards
+  -> curate_standards
+  -> summarize_requirements
+  -> identify_gaps
+  -> build_design_package
+  -> build_fortigate_handoff
+  -> check_compliance
+  -> validate_design
+  -> finalize_package
+```
+
+Exports:
+
+- Design package Markdown.
+- FortiGate handoff JSON.
+- Raw run JSON.
+- Detailed audit Markdown with standards evidence, extracted requirements, compliance matrix, execution traces, and optional FortiGate judge/config evidence.
+- Draft FortiGate `.conf` after the UI calls the FortiGate agent from the handoff.
+
+## FortiGate Provisioning Agent
+
+Open:
+
+```text
+http://localhost:8080/fortigate
+```
+
+The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes.
+
+## Standards Library
+
+Source standards live under:
+
+```text
+/data/fortigate-standards/raw
+```
+
+The index is written to:
+
+```text
+/data/fortigate-standards/index.json
+```
+
+Supported source types include Markdown/text/config files, HTML, PDF, Word, PowerPoint, and Excel. The ingester skips `.DS_Store`, `._*`, and `__MACOSX` files.
+
+Rebuild the standards index with:
+
+```bash
+curl -sS http://localhost:8001/fortigate/standards/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"source_dir":"/data/fortigate-standards/raw"}'
+```
+
 ## Persistence And Memory
 
 ### Redis
@@ -299,6 +389,8 @@ Redis is used for LangGraph checkpointing:
 - `/chat` conversation state.
 - `/research` graph checkpoints.
 - `/research/interactive` interrupt/resume checkpoints.
+- `/network-design` graph checkpoints.
+- `/fortigate` graph checkpoints.
 
 ### JSON Run Archive
 
@@ -308,7 +400,14 @@ Every completed research run is saved as JSON in:
 /data/research-runs
 ```
 
-This remains the fallback source of record.
+Network Design Helper and FortiGate runs are saved as JSON in:
+
+```text
+/data/network-design-runs
+/data/fortigate-runs
+```
+
+These JSON archives remain the fallback source of record.
 
 ### Neo4j Research Memory
 
@@ -345,7 +444,12 @@ Neo4j supports:
 | `GET` | `/health` | App health and model name |
 | `GET` | `/graph` | Chat graph visualizer |
 | `GET` | `/graph/mermaid` | Chat graph Mermaid source |
+| `GET` | `/research/graph` | Research graph visualizer |
 | `GET` | `/research/graph/mermaid` | Research graph Mermaid source |
+| `GET` | `/network-design/graph` | Network Design graph visualizer |
+| `GET` | `/network-design/graph/mermaid` | Network Design graph Mermaid source |
+| `GET` | `/fortigate/graph` | FortiGate graph visualizer |
+| `GET` | `/fortigate/graph/mermaid` | FortiGate graph Mermaid source |
 
 ### Chat
 
@@ -380,6 +484,34 @@ curl -sS http://localhost:8001/research \
   -H 'Content-Type: application/json' \
   -d '{"thread_id":"research-demo","mode":"quick","question":"What is LangGraph interrupt/resume useful for?","constraints":"Prefer official docs."}'
 ```
+
+### Network Design
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/network-design/message` | Run one conversational chat turn |
+| `POST` | `/network-design/chat` | Generate a standards-aware design package |
+| `GET` | `/network-design/runs` | List saved Network Design runs |
+| `GET` | `/network-design/runs/{run_id}` | Load a saved Network Design run |
+| `GET` | `/network-design/standards/search?q=...` | Search uploaded standards |
+
+The package response includes `standard_requirements`, `compliance_matrix`, `fortigate_handoff`, and `markdown`.
+
+### FortiGate
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/fortigate/design` | Generate an artifact-only FortiGate package |
+| `POST` | `/fortigate/interactive` | Start interactive FortiGate workflow |
+| `POST` | `/fortigate/interactive/{thread_id}/resume` | Resume interactive FortiGate workflow |
+| `POST` | `/fortigate/configs/parse` | Parse FortiGate config text |
+| `POST` | `/fortigate/changes/analyze` | Analyze a requested change against config text |
+| `POST` | `/fortigate/runs/{run_id}/judge` | Re-run judge for a saved FortiGate package |
+| `POST` | `/fortigate/runs/{run_id}/review` | Save human review decision |
+| `POST` | `/fortigate/standards/ingest` | Rebuild standards index |
+| `GET` | `/fortigate/standards/search?q=...` | Search uploaded standards |
+| `GET` | `/fortigate/runs` | List saved FortiGate runs |
+| `GET` | `/fortigate/runs/{run_id}` | Load saved FortiGate run |
 
 ### Neo4j Memory
 

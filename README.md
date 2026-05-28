@@ -1,12 +1,18 @@
-# LangGraph Research Assistant
+# LangGraph Agent Platform
 
-A local AI research assistant platform built with LangGraph, FastAPI, LiteLLM, Redis, Neo4j, Langfuse, and a simple web frontend.
+A local AI agent platform built with LangGraph, FastAPI, LiteLLM, Redis, Neo4j, Langfuse, and simple web frontends for research, network design, and FortiGate configuration-package generation.
 
 This repository is a sanitized public version of a local lab stack. It includes source code, Docker Compose templates, configuration examples, and documentation. It intentionally excludes live secrets, run history, database volumes, and generated credentials.
 
 ## What It Does
 
-The platform runs a structured research workflow rather than a single chatbot response:
+The platform now has three primary workflows:
+
+- **Research Assistant**: structured research with source retrieval, citations, quality checks, memory, and human review.
+- **Network Design Helper**: chat-first network design assistant that retrieves uploaded standards, extracts requirements, builds a design package, creates a FortiGate handoff, and produces a compliance matrix.
+- **FortiGate Provisioning Agent**: artifact-only FortiGate design/configuration workflow that generates draft CLI configuration, validation reports, standards checks, model judge feedback, and review-ready packages.
+
+The research workflow runs a structured pipeline rather than a single chatbot response:
 
 ```text
 retrieve_memory
@@ -27,8 +33,11 @@ retrieve_memory
 Key capabilities:
 
 - Web-based Research Assistant UI.
-- Web-based Network Design Helper for standards-aware design chat and FortiGate handoff payloads.
-- Artifact-only FortiGate provisioning agent for draft designs, config packages, standards checks, and review.
+- Chat-first Network Design Helper UI with downloadable design packages, FortiGate handoff JSON, audit files, raw run JSON, and FortiGate `.conf` exports.
+- Artifact-only FortiGate provisioning agent for draft designs, config packages, standards checks, frontier judge review, and human review.
+- Standards ingestion for Markdown/text/config files, HTML, PDFs, Word docs, PowerPoint decks, and spreadsheets.
+- Standards requirement extraction and compliance matrix generation.
+- Polished Mermaid graph viewers with pan/zoom and SVG/Mermaid downloads.
 - LangGraph state machine for research workflows.
 - LiteLLM model gateway to an OpenAI-compatible model server.
 - Redis checkpointing for graph state and interrupt/resume.
@@ -103,6 +112,15 @@ Additional local web tools:
 ```text
 http://localhost:8080/network-design
 http://localhost:8080/fortigate
+```
+
+Graph viewers:
+
+```text
+http://localhost:8001/graph
+http://localhost:8001/research/graph
+http://localhost:8001/network-design/graph
+http://localhost:8001/fortigate/graph
 ```
 
 The Linux deployment templates run LiteLLM and the LangGraph API with host networking so LiteLLM logs see the real LAN host address instead of Docker bridge addresses such as `172.x.x.x`. For your own environment, update `.env`, Compose files, and frontend API base URLs as needed.

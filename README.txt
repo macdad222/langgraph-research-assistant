@@ -11,7 +11,7 @@ through the system. It uses plain language first, then gives technical details.
 1. THE SHORT VERSION
 ====================
 
-We built a local AI research assistant platform.
+We built a local AI agent platform.
 
 It is not just a chatbot.
 
@@ -57,6 +57,19 @@ The key idea:
 
   A chatbot gives an answer.
   An agent runs a workflow.
+
+The platform now has three main end-user workflows:
+
+  1. Research Assistant
+     Helps research a question with sources, citations, review, and memory.
+
+  2. Network Design Helper
+     Helps a network engineer chat through a design, ground it in company
+     standards, create a design package, and prepare a FortiGate handoff.
+
+  3. FortiGate Provisioning Agent
+     Creates draft FortiGate design and configuration artifacts for review.
+     It does not log in to a firewall or make live changes.
 
 
 2. WHAT PROBLEM THIS SOLVES
@@ -193,6 +206,60 @@ It lets a user:
 - View backlog, audit, and dedup information.
 
 
+Network Design Helper UI
+------------------------
+
+URL:
+
+  http://localhost:8080/network-design
+
+This is a ChatGPT-style page for network design work.
+
+It lets a network engineer:
+
+- Have a normal design conversation.
+- Fill in customer, site, and design context in a sidebar.
+- Search uploaded standards and reference documents.
+- Generate a design package.
+- Generate a FortiGate handoff payload.
+- Download a design Markdown file.
+- Download a raw run JSON file.
+- Download a detailed audit Markdown file.
+- Generate and download a draft FortiGate .conf file.
+
+The important difference from a normal chatbot:
+
+  The helper does not just answer from memory. It retrieves standards,
+  extracts requirements, checks design evidence, and builds an auditable
+  package.
+
+
+FortiGate Agent UI
+------------------
+
+URL:
+
+  http://localhost:8080/fortigate
+
+This page is for creating review-ready FortiGate artifacts.
+
+It can:
+
+- Ask intake questions.
+- Parse an existing FortiGate config.
+- Plan a change.
+- Retrieve relevant standards.
+- Generate draft CLI configuration.
+- Run validation checks.
+- Run a model judge.
+- Save the package for review.
+
+Important safety rule:
+
+  The FortiGate agent is artifact-only. It does not push changes to a real
+  device.
+
+
 Agent API
 ---------
 
@@ -207,6 +274,9 @@ It owns:
 - Chat endpoint
 - Research endpoint
 - Interactive research endpoint
+- Network Design Helper endpoints
+- FortiGate agent endpoints
+- Standards ingestion and search endpoints
 - Memory endpoints
 - Graph visualization endpoints
 
@@ -248,7 +318,7 @@ Current model name:
 
 Current LiteLLM API URL:
 
-  http://your-vllm-host.example:4010/v1
+  http://agent-host.example:4010/v1
 
 Why LiteLLM is useful:
 
@@ -282,6 +352,8 @@ This matters because:
 
 - Chat threads can remember prior messages.
 - Interactive research can pause and resume.
+- Network design runs can preserve workflow state.
+- FortiGate workflows can preserve workflow state.
 - LangGraph can keep state between steps.
 
 
@@ -327,6 +399,57 @@ It helps answer:
 URL:
 
   http://localhost:3001
+
+
+Standards Library
+-----------------
+
+The standards library is where company standards and reference documents go.
+
+The source folder is:
+
+  /data/fortigate-standards/raw
+
+The generated search index is:
+
+  /data/fortigate-standards/index.json
+
+Supported document types include:
+
+- Markdown
+- Text
+- JSON/YAML
+- FortiGate config files
+- HTML
+- PDF
+- Word documents
+- PowerPoint decks
+- Excel spreadsheets
+
+The standards library is used by both the Network Design Helper and the
+FortiGate agent.
+
+The Network Design Helper also extracts standard requirements and builds a
+compliance matrix.
+
+Plain English version:
+
+  The system tries to answer, "Which standard requirement caused this design
+  decision, and where is the evidence in the generated package?"
+
+
+Graph Viewers
+-------------
+
+The platform includes visual graph pages for the workflows:
+
+  http://localhost:8001/graph
+  http://localhost:8001/research/graph
+  http://localhost:8001/network-design/graph
+  http://localhost:8001/fortigate/graph
+
+These pages render Mermaid graphs in the browser and include zoom, pan, and
+download controls.
 
 
 5. WHAT IS AN AGENT?
@@ -768,13 +891,21 @@ Used for:
 11. FRONTEND GUIDE
 ==================
 
-Open:
+Research Assistant:
 
   http://localhost:8080
 
+Network Design Helper:
 
-Main controls
--------------
+  http://localhost:8080/network-design
+
+FortiGate Agent:
+
+  http://localhost:8080/fortigate
+
+
+Research Assistant main controls
+--------------------------------
 
 Research question
 
@@ -858,6 +989,62 @@ Buttons:
 
   Audit Run
     Show review/policy/follow-up context for the selected run.
+
+
+Network Design Helper controls
+------------------------------
+
+The Network Design Helper is organized around a main chat panel and a sidebar.
+
+Chat panel:
+
+  This is where the engineer talks through the design.
+
+Sidebar:
+
+  This is where the engineer enters structured context such as customer, site,
+  design goal, constraints, FortiGate platform, WAN details, VLANs, routing,
+  logging, and security requirements.
+
+Important buttons:
+
+  Search Standards
+    Looks through the uploaded standards index.
+
+  Generate Design Package
+    Runs the Network Design Helper graph and creates the package.
+
+  Generate FortiGate Config
+    Sends the handoff to the FortiGate agent to produce draft CLI.
+
+  Design .md
+    Downloads the design package as Markdown.
+
+  Config .conf
+    Downloads the generated FortiGate draft CLI configuration.
+
+  Audit .md
+    Downloads an audit file with standards evidence, extracted requirements,
+    compliance matrix, traces, and judge/config details when available.
+
+  Run .json
+    Downloads the raw run response.
+
+
+FortiGate Agent controls
+------------------------
+
+The FortiGate page collects FortiGate-specific intake, can accept existing
+configuration text, and generates draft artifacts for review.
+
+It is useful for:
+
+- New FortiGate site design.
+- Change planning against an existing config.
+- SD-WAN design.
+- Firewall policy intent.
+- Standards-grounded config generation.
+- Review packages before implementation.
 
 
 12. API GUIDE
@@ -948,6 +1135,68 @@ Start:
 Resume:
 
   POST /research/interactive/{thread_id}/review
+
+
+Network Design Helper
+---------------------
+
+  POST /network-design/message
+  POST /network-design/chat
+  GET  /network-design/runs
+  GET  /network-design/runs/{run_id}
+  GET  /network-design/standards/search?q=...
+
+Example:
+
+  curl -sS http://localhost:8001/network-design/chat \
+    -H 'Content-Type: application/json' \
+    -d '{"thread_id":"network-demo","intake":{"customer_name":"ExampleCo","site_name":"branch-001","design_goal":"Create a dual-WAN branch design with guest internet and FortiAnalyzer logging."},"messages":[{"role":"user","content":"Use SD-WAN failover, separate corp and guest zones, and prepare a FortiGate handoff."}]}'
+
+Important response fields:
+
+  standard_requirements
+    Structured requirements extracted from retrieved standards.
+
+  compliance_matrix
+    Maps requirements to evidence in the design and handoff.
+
+  fortigate_handoff
+    Structured payload that can be sent to the FortiGate agent.
+
+  markdown
+    Downloadable design package text.
+
+
+FortiGate Agent
+---------------
+
+  POST /fortigate/design
+  POST /fortigate/interactive
+  POST /fortigate/interactive/{thread_id}/resume
+  POST /fortigate/configs/parse
+  POST /fortigate/changes/analyze
+  POST /fortigate/runs/{run_id}/judge
+  POST /fortigate/runs/{run_id}/review
+  POST /fortigate/standards/ingest
+  GET  /fortigate/standards/search?q=...
+  GET  /fortigate/runs
+  GET  /fortigate/runs/{run_id}
+
+
+Graph viewers
+-------------
+
+  GET /graph
+  GET /research/graph
+  GET /network-design/graph
+  GET /fortigate/graph
+
+Raw Mermaid source:
+
+  GET /graph/mermaid
+  GET /research/graph/mermaid
+  GET /network-design/graph/mermaid
+  GET /fortigate/graph/mermaid
 
 
 Memory

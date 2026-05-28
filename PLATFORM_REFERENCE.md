@@ -1,6 +1,6 @@
 # AI Agent Platform Reference
 
-Last updated: 2026-05-22
+Last updated: 2026-05-27
 
 This document captures the current Linux-oriented agent platform deployment using sanitized example hostnames.
 
@@ -15,6 +15,10 @@ The platform is a local agent stack for structured research and experimentation 
 - A web-based Research Assistant frontend.
 - A web-based Network Design Helper for standards-aware design conversations and FortiGate handoff payloads.
 - An artifact-only FortiGate provisioning agent for draft designs, validation, and review.
+- Standards ingestion and retrieval for Markdown/text/config, HTML, PDF, Word, PowerPoint, and Excel files.
+- Structured standards requirement extraction and a compliance matrix that maps standards to design, handoff, and generated config evidence.
+- Downloadable Network Design artifacts: design Markdown, FortiGate handoff JSON, FortiGate `.conf`, detailed audit Markdown, and raw run JSON.
+- Polished Mermaid graph viewers with pan/zoom plus SVG and Mermaid source downloads.
 - A static admin portal with links to all service UIs.
 - File-backed research run persistence in `/data/research-runs`.
 - File-backed Network Design Helper run persistence in `/data/network-design-runs`.
@@ -33,13 +37,16 @@ Admin Portal
   |
   | http://agent-host.example:8080
   v
-Research Assistant Frontend
+Research / Network Design / FortiGate Frontends
   |
   | http://agent-host.example:8001
   v
 FastAPI + LangGraph App
   |-- Redis checkpoints
   |-- JSON run archive: /data/research-runs
+  |-- JSON run archive: /data/network-design-runs
+  |-- JSON run archive: /data/fortigate-runs
+  |-- Standards index: /data/fortigate-standards/index.json
   |-- Neo4j research memory
   |-- Langfuse tracing callback
   |
@@ -63,6 +70,9 @@ vLLM Inference Server on vllm-host.example:8000
 | Agent API health | `http://agent-host.example:8001/health` | FastAPI health check |
 | Agent API docs | `http://agent-host.example:8001/docs` | FastAPI Swagger docs |
 | Chat graph visualizer | `http://agent-host.example:8001/graph` | Browser-rendered Mermaid graph |
+| Research graph visualizer | `http://agent-host.example:8001/research/graph` | Rendered graph viewer with zoom/export |
+| Network Design graph visualizer | `http://agent-host.example:8001/network-design/graph` | Rendered graph viewer with zoom/export |
+| FortiGate graph visualizer | `http://agent-host.example:8001/fortigate/graph` | Rendered graph viewer with zoom/export |
 | Chat graph Mermaid | `http://agent-host.example:8001/graph/mermaid` | Raw Mermaid graph text |
 | Research graph Mermaid | `http://agent-host.example:8001/research/graph/mermaid` | Raw research graph text |
 | Network Design graph Mermaid | `http://agent-host.example:8001/network-design/graph/mermaid` | Raw Network Design Helper graph text |
@@ -315,20 +325,33 @@ http://localhost:8080/network-design
 
 The Network Design Helper is a separate LangGraph workflow for network design engineers. It accepts required fields plus a free-form design conversation, retrieves matching chunks from the uploaded standards index, summarizes requirements, builds a standards-grounded design package, and returns a FortiGate-ready handoff payload.
 
+The UI is chat-first. The main pane is a chatbot-style conversation, while the sidebar holds design context, standards search, package generation, export buttons, status, and raw response details.
+
 Workflow shape:
 
 ```text
 intake_conversation
   -> retrieve_standards
+  -> curate_standards
   -> summarize_requirements
   -> identify_gaps
   -> build_design_package
   -> build_fortigate_handoff
+  -> check_compliance
   -> validate_design
   -> finalize_package
 ```
 
-The helper does not make live changes and does not call FortiGate directly in v1. It prepares the structured handoff that can be used with the FortiGate provisioning agent.
+Outputs:
+
+- `requirements_summary`: normalized summary of the chat and sidebar fields.
+- `standard_requirements`: structured requirements extracted from retrieved standards chunks.
+- `design_package`: standards-grounded design package.
+- `fortigate_handoff`: structured payload compatible with the FortiGate provisioning agent intake.
+- `compliance_matrix`: requirement-by-requirement mapping to design and handoff evidence.
+- `markdown`: downloadable design package.
+
+The UI can also call the FortiGate agent from the handoff to produce a downloadable `.conf` draft and a detailed audit file. The helper does not make live device changes.
 
 ## FortiGate Provisioning Agent
 
@@ -339,6 +362,63 @@ http://localhost:8080/fortigate
 ```
 
 The FortiGate agent is artifact-only. It can generate draft designs and CLI package artifacts, validate them, retrieve standards evidence, run a model judge, and save the package for review. No device changes are made by the platform.
+
+FortiGate workflow shape:
+
+```text
+intake_request
+  -> parse_existing_config
+  -> retrieve_standards
+  -> identify_missing_inputs
+  -> build_logical_design
+  -> build_fortigate_design
+  -> analyze_change_impact
+  -> generate_config_artifacts
+  -> validate_config
+  -> check_standards
+  -> risk_review
+  -> frontier_model_judge
+  -> optional revise_after_judge
+  -> finalize_package
+```
+
+The generated CLI is a draft artifact only. It is intended for engineering review, validation, and change planning before any operational use.
+
+## Standards Library
+
+Uploaded standards and reference documents live under:
+
+```text
+/data/fortigate-standards/raw
+```
+
+The standards ingester skips Mac metadata files such as `.DS_Store`, `._*`, and `__MACOSX`, then extracts text from supported file types:
+
+```text
+.md, .markdown, .txt, .conf, .cfg, .yaml, .yml, .json,
+.html, .htm, .pdf, .docx, .pptx, .xlsx
+```
+
+The generated index is:
+
+```text
+/data/fortigate-standards/index.json
+```
+
+Standards search is keyword/phrase based. The Network Design Helper adds a curation layer by extracting structured requirements from retrieved chunks, tagging them by topic and priority, then creating a compliance matrix against the generated design and handoff. When a FortiGate config is generated from the handoff, the downloadable audit file also maps requirements to CLI evidence where possible.
+
+Standards ingestion endpoint:
+
+```text
+POST /fortigate/standards/ingest
+```
+
+Search endpoints:
+
+```text
+GET /network-design/standards/search?q=...
+GET /fortigate/standards/search?q=...
+```
 
 ## Persistence And Memory
 
@@ -404,8 +484,11 @@ Neo4j supports:
 | `GET` | `/health` | App health and model name |
 | `GET` | `/graph` | Chat graph visualizer |
 | `GET` | `/graph/mermaid` | Chat graph Mermaid source |
+| `GET` | `/research/graph` | Research graph visualizer |
 | `GET` | `/research/graph/mermaid` | Research graph Mermaid source |
+| `GET` | `/network-design/graph` | Network Design Helper graph visualizer |
 | `GET` | `/network-design/graph/mermaid` | Network Design Helper graph Mermaid source |
+| `GET` | `/fortigate/graph` | FortiGate graph visualizer |
 | `GET` | `/fortigate/graph/mermaid` | FortiGate graph Mermaid source |
 
 ### Chat
@@ -447,6 +530,7 @@ curl -sS http://localhost:8001/research \
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/network-design/chat` | Generate a standards-aware design package from fields and chat |
+| `POST` | `/network-design/message` | Conversational chat turn for the Network Design Helper |
 | `GET` | `/network-design/runs` | List saved Network Design Helper runs |
 | `GET` | `/network-design/runs/{run_id}` | Load a saved Network Design Helper run |
 | `GET` | `/network-design/standards/search?q=...` | Search uploaded standards from the design helper |
@@ -458,6 +542,8 @@ curl -sS http://localhost:8001/network-design/chat \
   -H 'Content-Type: application/json' \
   -d '{"thread_id":"network-demo","intake":{"customer_name":"ExampleCo","site_name":"branch-001","design_goal":"Create a dual-WAN branch design with guest internet and FortiAnalyzer logging."},"messages":[{"role":"user","content":"Use SD-WAN failover, separate corp and guest zones, and prepare a FortiGate handoff."}]}'
 ```
+
+The run response includes `standard_requirements`, `compliance_matrix`, and `markdown` fields for auditability.
 
 ### FortiGate
 
@@ -575,6 +661,11 @@ Verified behavior as of this update:
 
 - FastAPI health returns `ok` and model `gemma-local`.
 - Research UI is available on port `8080`.
+- Network Design Helper is available at `/network-design`.
+- FortiGate provisioning UI is available at `/fortigate`.
+- Network Design packages include extracted standard requirements and a compliance matrix.
+- Network Design export buttons can download design Markdown, raw run JSON, audit Markdown, and FortiGate `.conf` after config generation.
+- Graph viewers are available for chat, research, Network Design, and FortiGate workflows.
 - LangGraph app calls LiteLLM on `agent-host.example:4010/v1`.
 - Langfuse traces are enabled.
 - Redis checkpointing supports chat and interactive graph state.
@@ -601,3 +692,6 @@ High-value next upgrades:
 - Add user identity/roles for human review approvals.
 - Add OPA as an external policy gate once policy requirements stabilize.
 - Add richer graph visualizations for Neo4j memory paths inside the frontend.
+- Promote the standards curation layer from keyword heuristics to a reviewed requirements database.
+- Persist explicit links between Network Design runs and generated FortiGate runs.
+- Add human review controls to the Network Design Helper output.
