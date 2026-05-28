@@ -147,6 +147,7 @@ Important variables:
 LITELLM_BASE_URL=http://agent-host.example:4010/v1
 LITELLM_API_KEY=<LiteLLM key>
 MODEL_NAME=gemma-local
+FORTIGATE_JUDGE_MODEL_NAME=Qwen3.6-27B
 LANGFUSE_PUBLIC_KEY=<Langfuse public key>
 LANGFUSE_SECRET_KEY=<Langfuse secret key>
 LANGFUSE_BASE_URL=http://agent-host.example:3001
@@ -388,10 +389,11 @@ intake_request
   -> risk_review
   -> frontier_model_judge
   -> optional revise_after_judge
+  -> optional regenerate_config_after_judge
   -> finalize_package
 ```
 
-The generated CLI is a draft artifact only. It is intended for engineering review, validation, and change planning before any operational use.
+The generated CLI is a draft artifact only. It is intended for engineering review, validation, and change planning before any operational use. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; when the judge finds more than three review items, the graph regenerates the config artifacts from scratch instead of making a small patch.
 
 ## Standards Library
 

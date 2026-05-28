@@ -145,6 +145,7 @@ Important variables:
 LITELLM_BASE_URL=http://agent-host.example:4010/v1
 LITELLM_API_KEY=<LiteLLM key>
 MODEL_NAME=gemma-local
+FORTIGATE_JUDGE_MODEL_NAME=Qwen3.6-27B
 LANGFUSE_PUBLIC_KEY=<Langfuse public key>
 LANGFUSE_SECRET_KEY=<Langfuse secret key>
 LANGFUSE_BASE_URL=http://agent-host.example:3001
@@ -363,7 +364,7 @@ Open:
 http://localhost:8080/fortigate
 ```
 
-The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes.
+The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; when the judge finds more than three review items, the graph regenerates the config artifacts from scratch instead of applying a small revision.
 
 ## Standards Library
 

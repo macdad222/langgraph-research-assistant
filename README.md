@@ -10,7 +10,7 @@ The platform now has three primary workflows:
 
 - **Research Assistant**: structured research with source retrieval, citations, quality checks, memory, and human review.
 - **Network Design Helper**: chat-first network design assistant that retrieves uploaded standards, extracts requirements, builds a design package, creates a FortiGate handoff, and produces a compliance matrix.
-- **FortiGate Provisioning Agent**: artifact-only FortiGate design/configuration workflow that generates draft CLI configuration, validation reports, standards checks, model judge feedback, and review-ready packages.
+- **FortiGate Provisioning Agent**: artifact-only FortiGate design/configuration workflow that generates draft CLI configuration, validation reports, standards checks, Qwen judge feedback, and review-ready packages.
 
 The research workflow runs a structured pipeline rather than a single chatbot response:
 

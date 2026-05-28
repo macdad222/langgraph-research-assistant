@@ -94,6 +94,23 @@ def _as_list(value: Any) -> list[str]:
     return []
 
 
+def _judge_review_item_count(report: dict[str, Any]) -> int:
+    review_fields = (
+        "blocking_issues",
+        "warnings",
+        "standards_concerns",
+        "config_risks",
+        "missing_questions",
+        "recommended_revisions",
+        "human_reviewer_focus",
+    )
+    items: set[str] = set()
+    for field in review_fields:
+        for item in _as_list(report.get(field)):
+            items.add(f"{field}:{item.lower()}")
+    return len(items)
+
+
 def _object_name(block: str) -> str:
     match = re.search(r'edit\s+"?([^"\n]+)"?', block)
     return match.group(1).strip() if match else ""
@@ -413,10 +430,59 @@ def build_fortigate_graph(
             return _trace_update(state, {"config_artifacts": artifacts}, "revise_after_judge", started_at, started_perf, "Revised artifacts after judge feedback.")
         return _trace_update(state, {}, "revise_after_judge", started_at, started_perf, "No structured revision returned; kept prior artifacts.", branch="no-op")
 
+    async def regenerate_config_after_judge(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        response = await model.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with key config_artifacts. Recreate the FortiGate draft artifacts from scratch "
+                        "because the independent judge found more than three review items. Do not patch the previous CLI; "
+                        "use it only as negative context. Preserve safety labels, standards citations, rollback details, "
+                        "and artifact-only language."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": state.get("intake", {}),
+                            "current_config_summary": state.get("current_config_summary", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "change_impact": state.get("change_impact", {}),
+                            "validation_report": state.get("validation_report", {}),
+                            "standards_report": state.get("standards_report", {}),
+                            "risk_report": state.get("risk_report", {}),
+                            "judge_report": state.get("judge_report", {}),
+                            "previous_config_artifacts": state.get("config_artifacts", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data
+        if artifacts:
+            artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
+            return _trace_update(
+                state,
+                {"config_artifacts": artifacts},
+                "regenerate_config_after_judge",
+                started_at,
+                started_perf,
+                "Regenerated config artifacts from scratch after broad judge feedback.",
+                branch="regenerated",
+            )
+        return _trace_update(state, {}, "regenerate_config_after_judge", started_at, started_perf, "No structured regeneration returned; kept prior artifacts.", branch="no-op")
+
     def route_after_judge(state: FortiGateState) -> str:
         report = state.get("judge_report", {})
         verdict = report.get("verdict", "needs_revision")
+        review_item_count = _judge_review_item_count(report)
         if verdict == "needs_revision" and int(state.get("judge_iterations", 0) or 0) < 2:
+            if review_item_count > 3:
+                return "regenerate"
             return "revise"
         return "human_review" if human_review_interrupt else "finalize"
 
@@ -477,6 +543,7 @@ def build_fortigate_graph(
     graph.add_node("risk_review", risk_review)
     graph.add_node("frontier_model_judge", frontier_model_judge)
     graph.add_node("revise_after_judge", revise_after_judge)
+    graph.add_node("regenerate_config_after_judge", regenerate_config_after_judge)
     if human_review_interrupt:
         graph.add_node("human_review_checkpoint", human_review_checkpoint)
     graph.add_node("finalize_package", finalize_package)
@@ -497,11 +564,12 @@ def build_fortigate_graph(
     graph.add_edge("validate_config", "check_standards")
     graph.add_edge("check_standards", "risk_review")
     graph.add_edge("risk_review", "frontier_model_judge")
-    judge_routes = {"revise": "revise_after_judge", "finalize": "finalize_package"}
+    judge_routes = {"revise": "revise_after_judge", "regenerate": "regenerate_config_after_judge", "finalize": "finalize_package"}
     if human_review_interrupt:
         judge_routes["human_review"] = "human_review_checkpoint"
     graph.add_conditional_edges("frontier_model_judge", route_after_judge, judge_routes)
     graph.add_edge("revise_after_judge", "validate_config")
+    graph.add_edge("regenerate_config_after_judge", "validate_config")
     if human_review_interrupt:
         graph.add_edge("human_review_checkpoint", "finalize_package")
     graph.add_edge("finalize_package", END)
