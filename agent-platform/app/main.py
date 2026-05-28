@@ -620,6 +620,10 @@ def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
                 "```json",
                 json.dumps(response.human_review.answers, indent=2),
                 "```",
+                "### Interpreted Answers",
+                "```json",
+                json.dumps(response.human_review.interpreted_answers, indent=2),
+                "```",
             ]
         )
     return "\n".join(lines)
@@ -697,6 +701,7 @@ def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_
                 reviewer_notes=result.get("human_review_notes", ""),
                 selected_issues=result.get("human_selected_issues", []),
                 answers=result.get("human_review_answers", {}),
+                interpreted_answers=result.get("human_review_interpreted_answers", []),
                 reviewed_at=datetime.now(timezone.utc).isoformat(),
             )
             if result.get("human_review_decision")
@@ -761,13 +766,17 @@ def _fortigate_policy_state(run: FortiGateRunResponse) -> dict[str, Any]:
 
 
 async def _revise_fortigate_config_from_review(run: FortiGateRunResponse, review: FortiGateHumanReview) -> None:
+    interpretation = await _interpret_fortigate_review_answers(run, review)
+    review.interpreted_answers = interpretation
     response = await app.state.fortigate_generation_model.ainvoke(
         [
             SystemMessage(
                 content=(
-                    "Return only JSON with key config_artifacts. Update the FortiGate draft artifacts using the human "
-                    "review answers and the prior judge report. Preserve artifact-only safety labels, standards citations, "
-                    "rollback details, and full CLI context. Do not apply changes to any device."
+                    "Return only JSON with key config_artifacts. Update the FortiGate draft artifacts using the interpreted "
+                    "human review answers and the prior judge report. Apply items where config_change_required is true. "
+                    "For accepted_risk items, do not force a config change; add clear accepted-risk/package notes so the "
+                    "next judge and human reviewer can see the exception. Preserve artifact-only safety labels, standards "
+                    "citations, rollback details, and full CLI context. Do not apply changes to any device."
                 )
             ),
             HumanMessage(
@@ -785,6 +794,7 @@ async def _revise_fortigate_config_from_review(run: FortiGateRunResponse, review
                         "judge_report": run.judge_report.model_dump(),
                         "review_questions": [item.model_dump() for item in run.review_questions],
                         "human_review": review.model_dump(),
+                        "interpreted_answers": interpretation,
                         "standards": [item.model_dump() for item in run.standards],
                     },
                     indent=2,
@@ -802,6 +812,85 @@ async def _revise_fortigate_config_from_review(run: FortiGateRunResponse, review
     run.validation_report = validate_config_artifacts(policy_state)
     run.standards_report = check_standards_compliance(policy_state)
     run.risk_report = review_risk(policy_state)
+
+
+async def _interpret_fortigate_review_answers(run: FortiGateRunResponse, review: FortiGateHumanReview) -> list[dict[str, Any]]:
+    if not review.answers:
+        return []
+    response = await app.state.fortigate_generation_model.ainvoke(
+        [
+            SystemMessage(
+                content=(
+                    "Return only JSON with key interpreted_answers. Interpret each human review answer for a FortiGate "
+                    "artifact update workflow. For answers like 'use best practice', produce a concrete FortiGate-oriented "
+                    "recommendation and config instructions. For answers like 'this is ok', 'accept risk', or 'do not change', "
+                    "set accepted_risk true, config_change_required false, and write a package_note explaining that Qwen may "
+                    "still flag it. For unclear answers, set needs_more_info true and explain the missing detail. Do not remove "
+                    "artifact-only safety constraints."
+                )
+            ),
+            HumanMessage(
+                content=json.dumps(
+                    {
+                        "intake": run.intake.model_dump(),
+                        "current_config_summary": run.current_config_summary.model_dump(),
+                        "fortigate_design": run.fortigate_design,
+                        "current_config_artifacts": run.config_artifacts,
+                        "judge_report": run.judge_report.model_dump(),
+                        "review_questions": [item.model_dump() for item in run.review_questions],
+                        "human_review_answers": review.answers,
+                        "reviewer_notes": review.reviewer_notes,
+                        "standards": [item.model_dump() for item in run.standards],
+                        "required_schema": {
+                            "interpreted_answers": [
+                                {
+                                    "question_id": "judge-01",
+                                    "source": "blocking_issues",
+                                    "human_answer": "raw reviewer answer",
+                                    "intent": "apply_change | accepted_risk | no_change | needs_more_info",
+                                    "config_change_required": True,
+                                    "accepted_risk": False,
+                                    "needs_more_info": False,
+                                    "recommendation": "specific engineering recommendation",
+                                    "config_instructions": ["specific FortiGate artifact or CLI update"],
+                                    "package_note": "note to preserve in the package/audit",
+                                }
+                            ]
+                        },
+                    },
+                    indent=2,
+                )
+            ),
+        ]
+    )
+    data = _extract_json_object(str(response.content))
+    interpreted = data.get("interpreted_answers") if isinstance(data, dict) else None
+    if not isinstance(interpreted, list):
+        interpreted = []
+    normalized: list[dict[str, Any]] = []
+    question_lookup = {item.question_id: item for item in run.review_questions}
+    for question_id, answer in review.answers.items():
+        match = next((item for item in interpreted if str(item.get("question_id")) == question_id), None)
+        question = question_lookup.get(question_id)
+        if not isinstance(match, dict):
+            match = {
+                "question_id": question_id,
+                "source": question.source if question else "human_review",
+                "human_answer": answer,
+                "intent": "needs_more_info" if not str(answer).strip() else "apply_change",
+                "config_change_required": bool(str(answer).strip()),
+                "accepted_risk": False,
+                "needs_more_info": not bool(str(answer).strip()),
+                "recommendation": str(answer),
+                "config_instructions": [str(answer)] if str(answer).strip() else [],
+                "package_note": "Fallback interpretation created because the model did not return this answer.",
+            }
+        match.setdefault("question_id", question_id)
+        match.setdefault("source", question.source if question else "human_review")
+        match.setdefault("human_answer", answer)
+        match.setdefault("package_note", "")
+        normalized.append(match)
+    return normalized
 
 
 def list_fortigate_runs(limit: int = 20) -> list[FortiGateRunSummary]:

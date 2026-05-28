@@ -112,6 +112,7 @@ class FortiGateHumanReview(BaseModel):
     reviewer_notes: str = ""
     selected_issues: list[str] = Field(default_factory=list)
     answers: dict[str, str] = Field(default_factory=dict)
+    interpreted_answers: list[dict[str, Any]] = Field(default_factory=list)
     reviewed_at: str = ""
 
 
