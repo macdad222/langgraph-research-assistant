@@ -43,6 +43,9 @@
     pre { overflow: auto; max-height: 520px; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: #020617; color: #cbd5e1; white-space: pre-wrap; }
     .tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
     .section { border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 16px; margin: 14px 0; background: rgba(2, 6, 23, .35); }
+    .review-panel { border-color: rgba(249, 115, 22, .65); background: rgba(67, 20, 7, .45); box-shadow: 0 0 0 1px rgba(249, 115, 22, .18) inset; }
+    .review-panel h2 { color: #fed7aa; }
+    .question-card { border: 1px solid rgba(251, 191, 36, .28); border-radius: 14px; padding: 12px; margin: 12px 0; background: rgba(15, 23, 42, .72); }
     .muted { color: var(--muted); }
     .hidden { display: none; }
     a { color: #fdba74; }
@@ -187,9 +190,9 @@
       document.getElementById("judge-pill").className = `pill ${run.judge_report?.verdict === "pass" ? "ok" : run.judge_report?.verdict === "block" ? "bad" : "warn"}`;
       document.getElementById("validation-pill").className = `pill ${run.validation_report?.passed ? "ok" : "bad"}`;
       outputEl.innerHTML = `
-        <div class="section"><h2>Final Package</h2><pre>${escapeHtml(run.markdown || "")}</pre></div>
         ${reviewQuestionsHtml(run)}
         <div class="section"><h2>Draft CLI</h2><pre>${escapeHtml(run.config_artifacts?.cli_config || "")}</pre></div>
+        <div class="section"><h2>Final Package Markdown</h2><pre>${escapeHtml(run.markdown || "")}</pre></div>
       `;
       rawEl.textContent = JSON.stringify(run, null, 2);
     }
@@ -197,14 +200,15 @@
     function reviewQuestionsHtml(run) {
       const questions = run.review_questions || [];
       if (!questions.length && run.judge_report?.verdict !== "pass") {
-        return `<div class="section"><h2>Human Review</h2><p class="muted">No judge questions were generated for this run.</p></div>`;
+        return `<div class="section review-panel"><h2>Human Review</h2><p class="muted">No judge questions were generated for this run.</p></div>`;
       }
       if (!questions.length) {
-        return `<div class="section"><h2>Human Review</h2><p class="muted">Judge passed. This package can be treated as final review-ready output.</p></div>`;
+        return `<div class="section review-panel"><h2>Human Review</h2><p class="muted">Judge passed. This package can be treated as final review-ready output.</p></div>`;
       }
       return `
-        <div class="section">
-          <h2>Human Review From Judge</h2>
+        <div class="section review-panel" id="human-review-panel">
+          <h2>Action Required: Human Review From Qwen Judge</h2>
+          <span class="pill warn">${questions.length} question(s) need answers</span>
           <p class="muted">Answer the judge questions. Submitting will update the draft config, re-run validation, and send it back to the Qwen judge. If Qwen passes it, the package is marked final.</p>
           <div class="field">
             <label for="review-decision">Review decision</label>
@@ -219,7 +223,7 @@
             <textarea id="review-notes" placeholder="Overall human review notes"></textarea>
           </div>
           ${questions.map((question) => `
-            <div class="field">
+            <div class="field question-card">
               <label for="answer-${escapeHtml(question.question_id)}">${escapeHtml(question.question_id)} - ${escapeHtml(question.source || "judge")}</label>
               <div class="muted">${escapeHtml(question.question || "")}</div>
               ${question.context ? `<div class="muted">Context: ${escapeHtml(question.context)}</div>` : ""}
