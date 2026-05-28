@@ -4,10 +4,18 @@ const path = require("node:path");
 
 const port = Number(process.env.PORT || 8080);
 const indexPath = path.join(__dirname, "index.html");
+const fortigatePath = path.join(__dirname, "fortigate.html");
 
 const server = http.createServer((req, res) => {
   if (req.url === "/" || req.url === "/index.html") {
     const html = fs.readFileSync(indexPath, "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+    return;
+  }
+
+  if (req.url === "/fortigate" || req.url === "/fortigate.html") {
+    const html = fs.readFileSync(fortigatePath, "utf8");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(html);
     return;

@@ -14,9 +14,26 @@ from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from app.fortigate import build_fortigate_graph, parse_fortigate_config
+from app.fortigate_judge import run_frontier_judge
+from app.fortigate_models import (
+    FortiGateConfigSummary,
+    FortiGateDesignRequest,
+    FortiGateHumanReview,
+    FortiGateInteractiveResponse,
+    FortiGateJudgeReport,
+    FortiGateReviewRequest,
+    FortiGateRunResponse,
+    FortiGateRunSummary,
+    FortiGateStandardsIngestRequest,
+    FortiGateStandardsIngestResponse,
+    FortiGateStandardsSearchResponse,
+    FortiGateValidationReport,
+)
 from app.graph import build_graph, initial_messages
 from app.memory import Neo4jResearchMemory
 from app.research import build_research_graph
+from app.standards import DEFAULT_INDEX_PATH, ingest_standards, search_standards
 
 try:
     from langfuse import get_client
@@ -117,6 +134,15 @@ class ResearchRequest(BaseModel):
 class ResearchFollowUpRequest(BaseModel):
     mode: str = Field(default="quick")
     instruction: str = Field(default="Run one more targeted pass to address remaining policy and quality issues.")
+
+
+class FortiGateConfigParseRequest(BaseModel):
+    config_text: str = Field(default="")
+
+
+class FortiGateChangeAnalysisRequest(BaseModel):
+    current_config: str = Field(default="")
+    requested_change: str = Field(..., min_length=1)
 
 
 class InteractiveResearchResponse(BaseModel):
@@ -359,6 +385,7 @@ def render_research_markdown(response: ResearchResponse) -> str:
 
 
 RUNS_DIR = Path(os.getenv("RESEARCH_RUNS_DIR", "/data/research-runs"))
+FORTIGATE_RUNS_DIR = Path(os.getenv("FORTIGATE_RUNS_DIR", "/data/fortigate-runs"))
 
 
 def _safe_run_id(run_id: str) -> str:
@@ -369,6 +396,10 @@ def _safe_run_id(run_id: str) -> str:
 
 def _run_path(run_id: str) -> Path:
     return RUNS_DIR / f"{_safe_run_id(run_id)}.json"
+
+
+def _fortigate_run_path(run_id: str) -> Path:
+    return FORTIGATE_RUNS_DIR / f"{_safe_run_id(run_id)}.json"
 
 
 def save_research_run(response: ResearchResponse) -> None:
@@ -425,6 +456,181 @@ def list_research_runs(limit: int = 20) -> list[ResearchRunSummary]:
     return [summarize_research_run(run) for run in runs[:limit]]
 
 
+def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
+    def bullets(items: list[str]) -> str:
+        return "\n".join(f"- {item}" for item in items) if items else "- None"
+
+    artifacts = response.config_artifacts or {}
+    lines = [
+        f"# FortiGate Artifact Package: {response.intake.site_name or response.run_id}",
+        "",
+        f"- Status: `{response.status}`",
+        f"- Request type: `{response.intake.request_type}`",
+        f"- Thread: `{response.thread_id}`",
+        f"- Run ID: `{response.run_id}`",
+        "- Safety: `DRAFT ONLY - NOT APPLIED TO DEVICE`",
+        "",
+        "## Requirements Summary",
+        "",
+        response.intake.business_intent,
+        "",
+        "## Parsed Current Configuration",
+        "",
+        f"- Hostname: `{response.current_config_summary.hostname or 'unknown'}`",
+        f"- Interfaces: `{len(response.current_config_summary.interfaces)}`",
+        f"- VLANs: `{len(response.current_config_summary.vlans)}`",
+        f"- Firewall policies: `{len(response.current_config_summary.firewall_policies)}`",
+        f"- Address objects: `{len(response.current_config_summary.address_objects)}`",
+        "",
+        "## Logical Design",
+        "",
+        "```json",
+        json.dumps(response.logical_design, indent=2),
+        "```",
+        "",
+        "## FortiGate Design",
+        "",
+        "```json",
+        json.dumps(response.fortigate_design, indent=2),
+        "```",
+        "",
+        "## Change Impact",
+        "",
+        "```json",
+        json.dumps(response.change_impact, indent=2),
+        "```",
+        "",
+        "## Draft CLI Configuration",
+        "",
+        "```text",
+        str(artifacts.get("cli_config") or "No CLI config generated."),
+        "```",
+        "",
+        "## Rollback Plan",
+        "",
+        str(artifacts.get("rollback_plan") or "No rollback plan generated."),
+        "",
+        "## Validation Report",
+        "",
+        f"- Passed: `{response.validation_report.passed}`",
+        "### Blocking Issues",
+        bullets(response.validation_report.blocking_issues),
+        "### Warnings",
+        bullets(response.validation_report.warnings),
+        "",
+        "## Standards Report",
+        "",
+        f"- Passed: `{response.standards_report.passed}`",
+        "### Warnings",
+        bullets(response.standards_report.warnings),
+        "",
+        "## Frontier Model Judge",
+        "",
+        f"- Verdict: `{response.judge_report.verdict}`",
+        f"- Model: `{response.judge_report.model or 'configured default'}`",
+        "### Blocking Issues",
+        bullets(response.judge_report.blocking_issues),
+        "### Recommended Revisions",
+        bullets(response.judge_report.recommended_revisions),
+        "### Human Reviewer Focus",
+        bullets(response.judge_report.human_reviewer_focus),
+        "",
+        "## Standards Evidence",
+        "",
+    ]
+    if response.standards:
+        for chunk in response.standards:
+            lines.extend([f"- `{chunk.chunk_id}` from `{chunk.document}` ({chunk.topic})"])
+    else:
+        lines.append("- No standards chunks retrieved.")
+    if response.human_review:
+        lines.extend(
+            [
+                "",
+                "## Human Review",
+                "",
+                f"- Decision: `{response.human_review.decision}`",
+                f"- Reviewed at: {response.human_review.reviewed_at or 'not recorded'}",
+                f"- Notes: {response.human_review.reviewer_notes or 'None'}",
+                "### Selected Issues",
+                bullets(response.human_review.selected_issues),
+            ]
+        )
+    return "\n".join(lines)
+
+
+def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_name: str) -> FortiGateRunResponse:
+    response = FortiGateRunResponse(
+        run_id=str(uuid4()),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        thread_id=thread_id,
+        model=model_name,
+        status=result.get("status", "needs_review"),
+        intake=result.get("intake", {}),
+        current_config_summary=FortiGateConfigSummary(**result.get("current_config_summary", {})),
+        standards=result.get("standards", []),
+        missing_questions=result.get("missing_questions", []),
+        logical_design=result.get("logical_design", {}),
+        fortigate_design=result.get("fortigate_design", {}),
+        change_impact=result.get("change_impact", {}),
+        config_artifacts=result.get("config_artifacts", {}),
+        validation_report=FortiGateValidationReport(**result.get("validation_report", {})),
+        standards_report=FortiGateValidationReport(**result.get("standards_report", {})),
+        risk_report=FortiGateValidationReport(**result.get("risk_report", {})),
+        judge_report=FortiGateJudgeReport(**result.get("judge_report", {})),
+        human_review=(
+            FortiGateHumanReview(
+                decision=result.get("human_review_decision", "pending"),
+                reviewer_notes=result.get("human_review_notes", ""),
+                selected_issues=result.get("human_selected_issues", []),
+                reviewed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            if result.get("human_review_decision")
+            else None
+        ),
+        execution_trace=result.get("execution_trace", []),
+    )
+    response.markdown = render_fortigate_markdown(response)
+    return response
+
+
+def save_fortigate_run(response: FortiGateRunResponse) -> None:
+    FORTIGATE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    _fortigate_run_path(response.run_id).write_text(response.model_dump_json(indent=2))
+
+
+def load_fortigate_run(run_id: str) -> FortiGateRunResponse:
+    path = _fortigate_run_path(run_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="FortiGate run not found")
+    return FortiGateRunResponse.model_validate_json(path.read_text())
+
+
+def summarize_fortigate_run(response: FortiGateRunResponse) -> FortiGateRunSummary:
+    return FortiGateRunSummary(
+        run_id=response.run_id,
+        created_at=response.created_at,
+        thread_id=response.thread_id,
+        request_type=response.intake.request_type,
+        site_name=response.intake.site_name,
+        status=response.status,
+        judge_verdict=response.judge_report.verdict,
+        validation_passed=response.validation_report.passed,
+    )
+
+
+def list_fortigate_runs(limit: int = 20) -> list[FortiGateRunSummary]:
+    FORTIGATE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    runs: list[FortiGateRunResponse] = []
+    for path in FORTIGATE_RUNS_DIR.glob("*.json"):
+        try:
+            runs.append(FortiGateRunResponse.model_validate_json(path.read_text()))
+        except Exception:
+            continue
+    runs.sort(key=lambda run: run.created_at, reverse=True)
+    return [summarize_fortigate_run(run) for run in runs[:limit]]
+
+
 def get_required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -453,6 +659,7 @@ async def lifespan(app: FastAPI):
     async with AsyncRedisSaver.from_conn_string(redis_url) as checkpointer:
         await checkpointer.asetup()
         app.state.model_name = model_name
+        app.state.fortigate_judge_model_name = os.getenv("FORTIGATE_JUDGE_MODEL_NAME", model_name)
         app.state.langfuse = None
         app.state.langfuse_handler = None
         app.state.research_memory = Neo4jResearchMemory.from_env()
@@ -477,6 +684,29 @@ async def lifespan(app: FastAPI):
             checkpointer,
             human_review_interrupt=True,
             memory_retriever=retrieve_research_memory,
+        )
+        judge_model = llm
+        if app.state.fortigate_judge_model_name != model_name:
+            judge_model = ChatOpenAI(
+                model=app.state.fortigate_judge_model_name,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=0,
+            )
+        app.state.fortigate_judge_model = judge_model
+        app.state.fortigate_graph = build_fortigate_graph(
+            llm,
+            checkpointer,
+            judge_model=judge_model,
+            judge_model_name=app.state.fortigate_judge_model_name,
+        )
+        app.state.interactive_fortigate_graph = build_fortigate_graph(
+            llm,
+            checkpointer,
+            clarification_interrupt=True,
+            human_review_interrupt=True,
+            judge_model=judge_model,
+            judge_model_name=app.state.fortigate_judge_model_name,
         )
         try:
             yield
@@ -518,6 +748,10 @@ def research_mermaid() -> str:
     return app.state.research_graph.get_graph().draw_mermaid()
 
 
+def fortigate_mermaid() -> str:
+    return app.state.fortigate_graph.get_graph().draw_mermaid()
+
+
 @app.get("/graph/mermaid", response_class=PlainTextResponse)
 async def graph_mermaid_endpoint():
     return graph_mermaid()
@@ -526,6 +760,11 @@ async def graph_mermaid_endpoint():
 @app.get("/research/graph/mermaid", response_class=PlainTextResponse)
 async def research_graph_mermaid_endpoint():
     return research_mermaid()
+
+
+@app.get("/fortigate/graph/mermaid", response_class=PlainTextResponse)
+async def fortigate_graph_mermaid_endpoint():
+    return fortigate_mermaid()
 
 
 @app.get("/graph", response_class=HTMLResponse)
@@ -897,6 +1136,186 @@ async def memory_research_dedup(q: str = "", limit: int = 10):
     if memory is None:
         raise HTTPException(status_code=503, detail="Neo4j memory is not available")
     return await memory.dedup(q.strip(), limit=max(1, min(limit, 50)))
+
+
+def _fortigate_config(thread_id: str, mode: str = "artifact") -> dict[str, Any]:
+    config = {
+        "configurable": {"thread_id": f"fortigate:{thread_id}"},
+        "metadata": {
+            "langfuse_trace_name": "fortigate-provisioning-agent",
+            "langfuse_session_id": thread_id,
+            "langfuse_user_id": "local-dev",
+            "fortigate_mode": mode,
+        },
+    }
+    if app.state.langfuse_handler is not None:
+        config["callbacks"] = [app.state.langfuse_handler]
+    return config
+
+
+@app.post("/fortigate/design", response_model=FortiGateRunResponse)
+async def fortigate_design(request: FortiGateDesignRequest):
+    thread_id = request.thread_id or str(uuid4())
+    try:
+        result = await app.state.fortigate_graph.ainvoke(
+            {
+                "intake": request.intake.model_dump(),
+                "existing_config": request.existing_config,
+            },
+            config=_fortigate_config(thread_id, request.mode),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if app.state.langfuse is not None:
+        app.state.langfuse.flush()
+    response = fortigate_response_from_state(result, thread_id, app.state.model_name)
+    save_fortigate_run(response)
+    return response
+
+
+@app.post("/fortigate/interactive", response_model=FortiGateInteractiveResponse)
+async def fortigate_interactive(request: FortiGateDesignRequest):
+    thread_id = request.thread_id or str(uuid4())
+    checkpoint_thread_id = f"fortigate:{thread_id}"
+    try:
+        result = await app.state.interactive_fortigate_graph.ainvoke(
+            {"intake": request.intake.model_dump(), "existing_config": request.existing_config},
+            config=_fortigate_config(thread_id, request.mode),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if app.state.langfuse is not None:
+        app.state.langfuse.flush()
+    review = _interrupt_payload(result)
+    if review and review.get("stage") == "fortigate_clarification":
+        return FortiGateInteractiveResponse(
+            status="awaiting_clarification",
+            thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            questions=review.get("questions", []),
+            run=None,
+        )
+    if review:
+        return FortiGateInteractiveResponse(
+            status="awaiting_review",
+            thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            questions=[],
+            run=None,
+        )
+    response = fortigate_response_from_state(result, thread_id, app.state.model_name)
+    save_fortigate_run(response)
+    return FortiGateInteractiveResponse(status="completed", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=response)
+
+
+@app.post("/fortigate/interactive/{thread_id}/resume", response_model=FortiGateInteractiveResponse)
+async def fortigate_interactive_resume(thread_id: str, payload: dict[str, Any]):
+    checkpoint_thread_id = f"fortigate:{thread_id}"
+    try:
+        result = await app.state.interactive_fortigate_graph.ainvoke(Command(resume=payload), config=_fortigate_config(thread_id, "interactive"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if app.state.langfuse is not None:
+        app.state.langfuse.flush()
+    review = _interrupt_payload(result)
+    if review and review.get("stage") == "fortigate_clarification":
+        return FortiGateInteractiveResponse(status="awaiting_clarification", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=review.get("questions", []), run=None)
+    if review:
+        return FortiGateInteractiveResponse(status="awaiting_review", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=None)
+    response = fortigate_response_from_state(result, thread_id, app.state.model_name)
+    save_fortigate_run(response)
+    return FortiGateInteractiveResponse(status="completed", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=response)
+
+
+@app.post("/fortigate/configs/parse", response_model=FortiGateConfigSummary)
+async def fortigate_config_parse(request: FortiGateConfigParseRequest):
+    return parse_fortigate_config(request.config_text)
+
+
+@app.post("/fortigate/changes/analyze")
+async def fortigate_change_analyze(request: FortiGateChangeAnalysisRequest):
+    summary = parse_fortigate_config(request.current_config)
+    lower_change = request.requested_change.lower()
+    impacted = {
+        "interfaces": [item for item in summary.interfaces if item.get("name", "").lower() in lower_change or item.get("alias", "").lower() in lower_change],
+        "policies": [item for item in summary.firewall_policies if item.get("name", "").lower() in lower_change or item.get("id", "").lower() in lower_change],
+        "address_objects": [item for item in summary.address_objects if item.get("name", "").lower() in lower_change],
+    }
+    return {
+        "requested_change": request.requested_change,
+        "current_config_summary": summary,
+        "impacted": impacted,
+        "requires_rollback_plan": True,
+        "safety": "Analysis only. No device changes were made.",
+    }
+
+
+@app.post("/fortigate/runs/{run_id}/judge", response_model=FortiGateRunResponse)
+async def fortigate_run_judge(run_id: str):
+    run = load_fortigate_run(run_id)
+    packet = {
+        "intake": run.intake.model_dump(),
+        "current_config_summary": run.current_config_summary.model_dump(),
+        "logical_design": run.logical_design,
+        "fortigate_design": run.fortigate_design,
+        "change_impact": run.change_impact,
+        "config_artifacts": run.config_artifacts,
+        "validation_report": run.validation_report.model_dump(),
+        "standards_report": run.standards_report.model_dump(),
+        "risk_report": run.risk_report.model_dump(),
+        "standards": [item.model_dump() for item in run.standards],
+    }
+    judge = await run_frontier_judge(
+        app.state.fortigate_judge_model,
+        packet,
+        judge_model_name=app.state.fortigate_judge_model_name,
+    )
+    run.judge_report = judge
+    run.markdown = render_fortigate_markdown(run)
+    save_fortigate_run(run)
+    return run
+
+
+@app.post("/fortigate/standards/ingest", response_model=FortiGateStandardsIngestResponse)
+async def fortigate_standards_ingest(request: FortiGateStandardsIngestRequest):
+    result = ingest_standards(request.source_dir, DEFAULT_INDEX_PATH)
+    return FortiGateStandardsIngestResponse(**result)
+
+
+@app.get("/fortigate/standards/search", response_model=FortiGateStandardsSearchResponse)
+async def fortigate_standards_search(q: str, limit: int = 10):
+    results = search_standards(q.strip(), limit=max(1, min(limit, 25)))
+    return FortiGateStandardsSearchResponse(query=q, results=results)
+
+
+@app.get("/fortigate/runs", response_model=list[FortiGateRunSummary])
+async def fortigate_runs(limit: int = 20):
+    return list_fortigate_runs(limit=max(1, min(limit, 100)))
+
+
+@app.get("/fortigate/runs/{run_id}", response_model=FortiGateRunResponse)
+async def fortigate_run(run_id: str):
+    return load_fortigate_run(run_id)
+
+
+@app.post("/fortigate/runs/{run_id}/review", response_model=FortiGateRunResponse)
+async def fortigate_run_review(run_id: str, request: FortiGateReviewRequest):
+    run = load_fortigate_run(run_id)
+    run.human_review = FortiGateHumanReview(
+        decision=request.decision,
+        reviewer_notes=request.reviewer_notes,
+        selected_issues=request.selected_issues,
+        reviewed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    if request.decision == "approved":
+        run.status = "approved_artifact"
+    elif request.decision == "rejected":
+        run.status = "rejected"
+    else:
+        run.status = "needs_review"
+    run.markdown = render_fortigate_markdown(run)
+    save_fortigate_run(run)
+    return run
 
 
 @app.post("/research/interactive", response_model=InteractiveResearchResponse)
