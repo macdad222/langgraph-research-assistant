@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.types import Command
@@ -32,6 +33,17 @@ from app.fortigate_models import (
 )
 from app.graph import build_graph, initial_messages
 from app.memory import Neo4jResearchMemory
+from app.network_design import build_network_design_graph
+from app.network_design_models import (
+    FortiGateHandoffPayload,
+    NetworkDesignChatResponse,
+    NetworkDesignMessage,
+    NetworkDesignRequest,
+    NetworkDesignRunResponse,
+    NetworkDesignRunSummary,
+    NetworkDesignStandardsSearchResponse,
+    NetworkDesignValidationReport,
+)
 from app.research import build_research_graph
 from app.standards import DEFAULT_INDEX_PATH, ingest_standards, search_standards
 
@@ -386,6 +398,7 @@ def render_research_markdown(response: ResearchResponse) -> str:
 
 RUNS_DIR = Path(os.getenv("RESEARCH_RUNS_DIR", "/data/research-runs"))
 FORTIGATE_RUNS_DIR = Path(os.getenv("FORTIGATE_RUNS_DIR", "/data/fortigate-runs"))
+NETWORK_DESIGN_RUNS_DIR = Path(os.getenv("NETWORK_DESIGN_RUNS_DIR", "/data/network-design-runs"))
 
 
 def _safe_run_id(run_id: str) -> str:
@@ -400,6 +413,10 @@ def _run_path(run_id: str) -> Path:
 
 def _fortigate_run_path(run_id: str) -> Path:
     return FORTIGATE_RUNS_DIR / f"{_safe_run_id(run_id)}.json"
+
+
+def _network_design_run_path(run_id: str) -> Path:
+    return NETWORK_DESIGN_RUNS_DIR / f"{_safe_run_id(run_id)}.json"
 
 
 def save_research_run(response: ResearchResponse) -> None:
@@ -631,6 +648,137 @@ def list_fortigate_runs(limit: int = 20) -> list[FortiGateRunSummary]:
     return [summarize_fortigate_run(run) for run in runs[:limit]]
 
 
+def render_network_design_markdown(response: NetworkDesignRunResponse) -> str:
+    def bullets(items: list[str]) -> str:
+        return "\n".join(f"- {item}" for item in items) if items else "- None"
+
+    lines = [
+        f"# Network Design Package: {response.intake.site_name or response.intake.customer_name or response.run_id}",
+        "",
+        f"- Status: `{response.status}`",
+        f"- Customer: `{response.intake.customer_name or 'not provided'}`",
+        f"- Site: `{response.intake.site_name or 'not provided'}`",
+        f"- Thread: `{response.thread_id}`",
+        f"- Run ID: `{response.run_id}`",
+        "- Safety: `DESIGN ARTIFACT ONLY - NOT APPLIED TO DEVICE`",
+        "",
+        "## Design Goal",
+        "",
+        response.intake.design_goal,
+        "",
+        "## Requirements Summary",
+        "",
+        "```json",
+        json.dumps(response.requirements_summary, indent=2),
+        "```",
+        "",
+        "## Design Package",
+        "",
+        "```json",
+        json.dumps(response.design_package, indent=2),
+        "```",
+        "",
+        "## Open Questions",
+        "",
+        bullets(response.missing_questions),
+        "",
+        "## FortiGate Handoff Payload",
+        "",
+        "```json",
+        json.dumps(response.fortigate_handoff.model_dump(), indent=2),
+        "```",
+        "",
+        "## Validation Report",
+        "",
+        f"- Passed: `{response.validation_report.passed}`",
+        "",
+        "### Blocking Issues",
+        bullets(response.validation_report.blocking_issues),
+        "",
+        "### Warnings",
+        bullets(response.validation_report.warnings),
+        "",
+        "### Checks",
+        bullets(response.validation_report.checks),
+        "",
+        "## Standards Evidence",
+        "",
+    ]
+    if response.standards:
+        for chunk in response.standards:
+            lines.append(f"- `{chunk.chunk_id}` from `{chunk.document}` ({chunk.topic})")
+    else:
+        lines.append("- No standards chunks retrieved.")
+    lines.extend(["", "## Execution Trace", ""])
+    if response.execution_trace:
+        lines.append("| Node | Duration | Branch | Summary |")
+        lines.append("| --- | ---: | --- | --- |")
+        for item in response.execution_trace:
+            summary = str(item.get("summary", "")).replace("|", "\\|")
+            lines.append(f"| `{item.get('node', '')}` | {item.get('duration_ms', 0)} ms | {item.get('branch', '')} | {summary} |")
+    else:
+        lines.append("- No execution trace returned.")
+    return "\n".join(lines)
+
+
+def network_design_response_from_state(result: dict[str, Any], thread_id: str, model_name: str) -> NetworkDesignRunResponse:
+    response = NetworkDesignRunResponse(
+        run_id=str(uuid4()),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        thread_id=thread_id,
+        model=model_name,
+        status=result.get("status", "needs_design_review"),
+        intake=result.get("intake", {}),
+        messages=result.get("messages", []),
+        standards=result.get("standards", []),
+        requirements_summary=result.get("requirements_summary", {}),
+        missing_questions=result.get("missing_questions", []),
+        design_package=result.get("design_package", {}),
+        fortigate_handoff=FortiGateHandoffPayload(**result.get("fortigate_handoff", {})),
+        validation_report=NetworkDesignValidationReport(**result.get("validation_report", {})),
+        execution_trace=result.get("execution_trace", []),
+    )
+    response.markdown = render_network_design_markdown(response)
+    return response
+
+
+def save_network_design_run(response: NetworkDesignRunResponse) -> None:
+    NETWORK_DESIGN_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    _network_design_run_path(response.run_id).write_text(response.model_dump_json(indent=2))
+
+
+def load_network_design_run(run_id: str) -> NetworkDesignRunResponse:
+    path = _network_design_run_path(run_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Network design run not found")
+    return NetworkDesignRunResponse.model_validate_json(path.read_text())
+
+
+def summarize_network_design_run(response: NetworkDesignRunResponse) -> NetworkDesignRunSummary:
+    return NetworkDesignRunSummary(
+        run_id=response.run_id,
+        created_at=response.created_at,
+        thread_id=response.thread_id,
+        customer_name=response.intake.customer_name,
+        site_name=response.intake.site_name,
+        status=response.status,
+        standards_count=len(response.standards),
+        validation_passed=response.validation_report.passed,
+    )
+
+
+def list_network_design_runs(limit: int = 20) -> list[NetworkDesignRunSummary]:
+    NETWORK_DESIGN_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    runs: list[NetworkDesignRunResponse] = []
+    for path in NETWORK_DESIGN_RUNS_DIR.glob("*.json"):
+        try:
+            runs.append(NetworkDesignRunResponse.model_validate_json(path.read_text()))
+        except Exception:
+            continue
+    runs.sort(key=lambda run: run.created_at, reverse=True)
+    return [summarize_network_design_run(run) for run in runs[:limit]]
+
+
 def get_required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -678,6 +826,7 @@ async def lifespan(app: FastAPI):
             return await memory.retrieve_context(query, limit=5)
 
         app.state.graph = build_graph(llm, checkpointer)
+        app.state.network_design_chat_model = llm
         app.state.research_graph = build_research_graph(llm, checkpointer, memory_retriever=retrieve_research_memory)
         app.state.interactive_research_graph = build_research_graph(
             llm,
@@ -708,6 +857,7 @@ async def lifespan(app: FastAPI):
             judge_model=judge_model,
             judge_model_name=app.state.fortigate_judge_model_name,
         )
+        app.state.network_design_graph = build_network_design_graph(llm, checkpointer)
         try:
             yield
         finally:
@@ -752,6 +902,10 @@ def fortigate_mermaid() -> str:
     return app.state.fortigate_graph.get_graph().draw_mermaid()
 
 
+def network_design_mermaid() -> str:
+    return app.state.network_design_graph.get_graph().draw_mermaid()
+
+
 @app.get("/graph/mermaid", response_class=PlainTextResponse)
 async def graph_mermaid_endpoint():
     return graph_mermaid()
@@ -767,76 +921,325 @@ async def fortigate_graph_mermaid_endpoint():
     return fortigate_mermaid()
 
 
-@app.get("/graph", response_class=HTMLResponse)
-async def graph_page():
-    mermaid = graph_mermaid()
+@app.get("/network-design/graph/mermaid", response_class=PlainTextResponse)
+async def network_design_graph_mermaid_endpoint():
+    return network_design_mermaid()
+
+
+def graph_viewer_page(title: str, description: str, mermaid: str, raw_path: str) -> str:
+    title_json = json.dumps(title)
+    mermaid_json = json.dumps(mermaid)
+    raw_path_json = json.dumps(raw_path)
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LangGraph Agent Graph</title>
+  <title>{title}</title>
   <style>
-    :root {{ color-scheme: light dark; }}
+    :root {{
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #111827;
+      --panel-soft: #0f172a;
+      --line: #334155;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+    }}
+    * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, .16), transparent 34rem),
+        var(--bg);
+      color: var(--text);
     }}
     header {{
-      padding: 20px 28px;
-      border-bottom: 1px solid #334155;
-      background: #111827;
-    }}
-    main {{ padding: 24px 28px; }}
-    h1 {{ margin: 0 0 8px; font-size: 24px; }}
-    .meta {{ color: #94a3b8; }}
-    .panel {{
-      margin-top: 20px;
-      padding: 20px;
-      border: 1px solid #334155;
-      border-radius: 12px;
-      background: #020617;
-      overflow-x: auto;
-    }}
-    .mermaid {{
       display: flex;
-      justify-content: center;
-      min-width: 480px;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+      padding: 20px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(17, 24, 39, .92);
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      backdrop-filter: blur(10px);
+    }}
+    main {{ padding: 20px 28px 32px; }}
+    h1 {{ margin: 0 0 6px; font-size: 24px; }}
+    .meta {{ color: var(--muted); line-height: 1.45; }}
+    .actions {{ display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }}
+    button, a.button {{
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: #06111f;
+      background: var(--accent);
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      font-size: 14px;
+    }}
+    button.secondary, a.button.secondary {{
+      background: #1f2937;
+      color: var(--text);
+      border: 1px solid var(--line);
+    }}
+    .panel {{
+      border: 1px solid rgba(148, 163, 184, .22);
+      border-radius: 18px;
+      background: rgba(15, 23, 42, .92);
+      box-shadow: 0 18px 55px rgba(0, 0, 0, .28);
+      overflow: hidden;
+    }}
+    .viewer-toolbar {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(2, 6, 23, .52);
+    }}
+    .viewer-toolbar .left, .viewer-toolbar .right {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }}
+    .zoom-label {{ color: var(--muted); font-size: 13px; min-width: 52px; text-align: center; }}
+    .viewport {{
+      height: calc(100vh - 210px);
+      min-height: 520px;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(148, 163, 184, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, .055) 1px, transparent 1px),
+        #020617;
+      background-size: 28px 28px;
+      cursor: grab;
+      position: relative;
+    }}
+    .viewport.dragging {{ cursor: grabbing; }}
+    #graph-canvas {{
+      transform-origin: 0 0;
+      padding: 28px;
+      min-width: 100%;
+      width: max-content;
+    }}
+    #graph-canvas svg {{
+      max-width: none !important;
+      height: auto;
+      filter: drop-shadow(0 18px 30px rgba(0,0,0,.25));
+    }}
+    .source-panel {{
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid rgba(148, 163, 184, .22);
+      border-radius: 16px;
+      background: rgba(15, 23, 42, .84);
     }}
     pre {{
       white-space: pre-wrap;
       color: #cbd5e1;
-      background: #111827;
+      background: #020617;
       padding: 16px;
-      border-radius: 8px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      max-height: 360px;
+      overflow: auto;
     }}
-    a {{ color: #93c5fd; }}
+    a {{ color: #7dd3fc; }}
+    @media (max-width: 820px) {{
+      header {{ flex-direction: column; }}
+      .actions {{ justify-content: flex-start; }}
+      .viewport {{ height: 70vh; }}
+    }}
   </style>
 </head>
 <body>
   <header>
-    <h1>LangGraph Agent Graph</h1>
-    <div class="meta">Model: {app.state.model_name} | Raw Mermaid: <a href="/graph/mermaid">/graph/mermaid</a> | Health: <a href="/health">/health</a></div>
+    <div>
+      <h1>{title}</h1>
+      <div class="meta">{description}<br />Model: {app.state.model_name} | Raw Mermaid: <a href="{raw_path}">{raw_path}</a></div>
+    </div>
+    <div class="actions">
+      <a class="button secondary" href="/network-design/graph">Network Design</a>
+      <a class="button secondary" href="/fortigate/graph">FortiGate</a>
+      <a class="button secondary" href="/research/graph">Research</a>
+      <a class="button secondary" href="/graph">Chat</a>
+    </div>
   </header>
   <main>
     <section class="panel">
-      <div class="mermaid">
-{mermaid}
+      <div class="viewer-toolbar">
+        <div class="left">
+          <button id="zoom-out" class="secondary">-</button>
+          <span id="zoom-label" class="zoom-label">100%</span>
+          <button id="zoom-in" class="secondary">+</button>
+          <button id="fit" class="secondary">Fit</button>
+          <button id="reset" class="secondary">Reset</button>
+        </div>
+        <div class="right">
+          <button id="download-svg">Download SVG</button>
+          <button id="download-mmd" class="secondary">Download Mermaid</button>
+        </div>
+      </div>
+      <div id="viewport" class="viewport">
+        <div id="graph-canvas"></div>
       </div>
     </section>
-    <section class="panel">
+    <section class="source-panel">
       <h2>Mermaid Source</h2>
-      <pre>{mermaid}</pre>
+      <pre id="source"></pre>
     </section>
   </main>
   <script type="module">
     import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
-    mermaid.initialize({{ startOnLoad: true, theme: "dark", securityLevel: "loose" }});
+    const title = {title_json};
+    const rawPath = {raw_path_json};
+    const source = {mermaid_json};
+    const canvas = document.getElementById("graph-canvas");
+    const viewport = document.getElementById("viewport");
+    const zoomLabel = document.getElementById("zoom-label");
+    let scale = 1;
+    let translateX = 0;
+    let translateY = 0;
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    mermaid.initialize({{
+      startOnLoad: false,
+      theme: "dark",
+      securityLevel: "loose",
+      flowchart: {{
+        curve: "basis",
+        padding: 18,
+        nodeSpacing: 44,
+        rankSpacing: 54,
+        htmlLabels: true
+      }},
+      themeVariables: {{
+        background: "#020617",
+        primaryColor: "#0f172a",
+        primaryTextColor: "#e5e7eb",
+        primaryBorderColor: "#38bdf8",
+        lineColor: "#7dd3fc",
+        secondaryColor: "#111827",
+        tertiaryColor: "#1f2937",
+        noteBkgColor: "#111827",
+        noteTextColor: "#e5e7eb",
+        fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+      }}
+    }});
+
+    document.getElementById("source").textContent = source;
+
+    function applyTransform() {{
+      canvas.style.transform = `translate(${{translateX}}px, ${{translateY}}px) scale(${{scale}})`;
+      zoomLabel.textContent = `${{Math.round(scale * 100)}}%`;
+    }}
+
+    function fitToView() {{
+      const svg = canvas.querySelector("svg");
+      if (!svg) return;
+      const viewportRect = viewport.getBoundingClientRect();
+      const graphRect = svg.getBoundingClientRect();
+      const rawWidth = graphRect.width / scale;
+      const rawHeight = graphRect.height / scale;
+      scale = Math.min(1.4, Math.max(0.25, Math.min((viewportRect.width - 80) / rawWidth, (viewportRect.height - 80) / rawHeight)));
+      translateX = 28;
+      translateY = 28;
+      applyTransform();
+    }}
+
+    function downloadText(filename, content, type) {{
+      const blob = new Blob([content], {{ type }});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }}
+
+    const rendered = await mermaid.render("rendered-graph", source);
+    canvas.innerHTML = rendered.svg;
+    applyTransform();
+    requestAnimationFrame(fitToView);
+
+    document.getElementById("zoom-in").addEventListener("click", () => {{
+      scale = Math.min(3, scale + 0.1);
+      applyTransform();
+    }});
+    document.getElementById("zoom-out").addEventListener("click", () => {{
+      scale = Math.max(0.15, scale - 0.1);
+      applyTransform();
+    }});
+    document.getElementById("fit").addEventListener("click", fitToView);
+    document.getElementById("reset").addEventListener("click", () => {{
+      scale = 1;
+      translateX = 0;
+      translateY = 0;
+      applyTransform();
+    }});
+    document.getElementById("download-mmd").addEventListener("click", () => {{
+      downloadText(`${{title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "graph"}}.mmd`, source, "text/plain");
+    }});
+    document.getElementById("download-svg").addEventListener("click", () => {{
+      const svg = canvas.querySelector("svg");
+      if (!svg) return;
+      downloadText(`${{title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "graph"}}.svg`, new XMLSerializer().serializeToString(svg), "image/svg+xml");
+    }});
+
+    viewport.addEventListener("pointerdown", (event) => {{
+      dragging = true;
+      viewport.classList.add("dragging");
+      startX = event.clientX - translateX;
+      startY = event.clientY - translateY;
+      viewport.setPointerCapture(event.pointerId);
+    }});
+    viewport.addEventListener("pointermove", (event) => {{
+      if (!dragging) return;
+      translateX = event.clientX - startX;
+      translateY = event.clientY - startY;
+      applyTransform();
+    }});
+    viewport.addEventListener("pointerup", () => {{
+      dragging = false;
+      viewport.classList.remove("dragging");
+    }});
+    viewport.addEventListener("wheel", (event) => {{
+      event.preventDefault();
+      const delta = event.deltaY < 0 ? 0.08 : -0.08;
+      scale = Math.max(0.15, Math.min(3, scale + delta));
+      applyTransform();
+    }}, {{ passive: false }});
   </script>
 </body>
 </html>"""
+
+
+@app.get("/graph", response_class=HTMLResponse)
+async def graph_page():
+    return graph_viewer_page("Chat Graph", "Base checkpointed chat workflow.", graph_mermaid(), "/graph/mermaid")
+
+
+@app.get("/research/graph", response_class=HTMLResponse)
+async def research_graph_page():
+    return graph_viewer_page("Research Graph", "Structured research workflow with memory, critique, repair, review, and citations.", research_mermaid(), "/research/graph/mermaid")
+
+
+@app.get("/fortigate/graph", response_class=HTMLResponse)
+async def fortigate_graph_page():
+    return graph_viewer_page("FortiGate Provisioning Graph", "Artifact-only FortiGate design, validation, standards checks, judge review, and package finalization.", fortigate_mermaid(), "/fortigate/graph/mermaid")
+
+
+@app.get("/network-design/graph", response_class=HTMLResponse)
+async def network_design_graph_page():
+    return graph_viewer_page("Network Design Helper Graph", "Standards-aware design chat workflow that creates a package and FortiGate handoff.", network_design_mermaid(), "/network-design/graph/mermaid")
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1151,6 +1554,165 @@ def _fortigate_config(thread_id: str, mode: str = "artifact") -> dict[str, Any]:
     if app.state.langfuse_handler is not None:
         config["callbacks"] = [app.state.langfuse_handler]
     return config
+
+
+def _network_design_config(thread_id: str) -> dict[str, Any]:
+    config = {
+        "configurable": {"thread_id": f"network-design:{thread_id}"},
+        "metadata": {
+            "langfuse_trace_name": "network-design-helper",
+            "langfuse_session_id": thread_id,
+            "langfuse_user_id": "local-dev",
+        },
+    }
+    if app.state.langfuse_handler is not None:
+        config["callbacks"] = [app.state.langfuse_handler]
+    return config
+
+
+def _network_design_chat_query(request: NetworkDesignRequest) -> str:
+    message_text = " ".join(message.content for message in request.messages[-12:])
+    parts = [
+        request.intake.customer_name,
+        request.intake.site_name,
+        request.intake.design_goal,
+        request.intake.business_context,
+        request.intake.constraints,
+        message_text,
+    ]
+    return " ".join(part for part in parts if part).strip() or "network design fortigate sd-wan firewall standards"
+
+
+def _network_design_standards_payload(standards: list[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "chunk_id": item.chunk_id,
+            "document": item.document,
+            "topic": item.topic,
+            "text": item.text[:1200],
+        }
+        for item in standards[:8]
+    ]
+
+
+def _network_design_fallback_reply(request: NetworkDesignRequest, standards: list[Any]) -> str:
+    standards_note = ""
+    if standards:
+        standards_note = f"\n\nI found {len(standards)} relevant standards/documentation chunks and will use them when we generate the package."
+    site = request.intake.site_name or "this site"
+    return (
+        f"Let's work through the network design for {site}. I have the high-level goal. "
+        "Before generating the design package, I need a few details:\n\n"
+        "1. WAN circuits: provider, bandwidth, static/DHCP addressing, gateways, and primary/backup or load-sharing preference.\n"
+        "2. LAN networks: VLAN names, subnets, gateway IPs, DHCP expectations, and any voice/guest/corp separation.\n"
+        "3. Security zones and policy intent: what each zone can reach, especially guest-to-corporate restrictions.\n"
+        "4. Routing and SD-WAN: performance SLA targets, preferred apps, failover behavior, and any BGP/static routing needs.\n"
+        "5. Operations: logging destination, monitoring/SNMP, change window, rollback expectation, and who approves the design.\n\n"
+        "Answer any subset of those, and I will keep refining the design conversation."
+        f"{standards_note}"
+    )
+
+
+def _looks_off_topic_network_design(text: str) -> bool:
+    lowered = text.lower()
+    network_terms = [
+        "wan",
+        "lan",
+        "sd-wan",
+        "firewall",
+        "fortigate",
+        "vlan",
+        "subnet",
+        "routing",
+        "logging",
+        "design",
+        "network",
+        "security",
+    ]
+    off_topic_terms = ["nba", "nhl", "playoff", "stanley cup", "espn"]
+    return any(term in lowered for term in off_topic_terms) and not any(term in lowered for term in network_terms)
+
+
+@app.post("/network-design/message", response_model=NetworkDesignChatResponse)
+async def network_design_message(request: NetworkDesignRequest):
+    thread_id = request.thread_id or str(uuid4())
+    standards = search_standards(_network_design_chat_query(request), limit=8)
+    transcript = "\n".join(f"{message.role}: {message.content}" for message in request.messages[-16:])
+    try:
+        result = await app.state.network_design_chat_model.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You are the Network Design Helper, a standards-aware assistant for network design engineers. "
+                        "This conversation is only about network design. Do not answer sports, news, schedules, or unrelated topics. "
+                        "Have a normal conversational back-and-forth. Ask focused follow-up questions when details are missing. "
+                        "Use the provided standards context when relevant, but do not over-cite. Do not claim any device changes were made. "
+                        "When the user seems ready, tell them to generate the design package and FortiGate handoff. "
+                        "Your response must directly address the current network design request."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": request.intake.model_dump(),
+                            "conversation": transcript,
+                            "standards": _network_design_standards_payload(standards),
+                        },
+                        indent=2,
+                    )
+                ),
+            ],
+            config=_network_design_config(thread_id),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if app.state.langfuse is not None:
+        app.state.langfuse.flush()
+    content = str(result.content)
+    if _looks_off_topic_network_design(content):
+        content = _network_design_fallback_reply(request, standards)
+    return NetworkDesignChatResponse(
+        thread_id=thread_id,
+        model=app.state.model_name,
+        message=NetworkDesignMessage(role="assistant", content=content),
+        standards=standards,
+    )
+
+
+@app.post("/network-design/chat", response_model=NetworkDesignRunResponse)
+async def network_design_chat(request: NetworkDesignRequest):
+    thread_id = request.thread_id or str(uuid4())
+    try:
+        result = await app.state.network_design_graph.ainvoke(
+            {
+                "intake": request.intake.model_dump(),
+                "messages": [message.model_dump() for message in request.messages],
+            },
+            config=_network_design_config(thread_id),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if app.state.langfuse is not None:
+        app.state.langfuse.flush()
+    response = network_design_response_from_state(result, thread_id, app.state.model_name)
+    save_network_design_run(response)
+    return response
+
+
+@app.get("/network-design/standards/search", response_model=NetworkDesignStandardsSearchResponse)
+async def network_design_standards_search(q: str, limit: int = 10):
+    results = search_standards(q.strip(), limit=max(1, min(limit, 25)))
+    return NetworkDesignStandardsSearchResponse(query=q, results=results)
+
+
+@app.get("/network-design/runs", response_model=list[NetworkDesignRunSummary])
+async def network_design_runs(limit: int = 20):
+    return list_network_design_runs(limit=max(1, min(limit, 100)))
+
+
+@app.get("/network-design/runs/{run_id}", response_model=NetworkDesignRunResponse)
+async def network_design_run(run_id: str):
+    return load_network_design_run(run_id)
 
 
 @app.post("/fortigate/design", response_model=FortiGateRunResponse)

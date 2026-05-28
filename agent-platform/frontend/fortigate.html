@@ -123,6 +123,9 @@
       </div>
       <div class="row" style="margin-top: 10px;">
         <button id="search-standards" class="secondary">Search Standards</button>
+        <button id="load-latest" class="secondary">Load Latest Run</button>
+      </div>
+      <div class="row" style="margin-top: 10px;">
         <button id="copy-markdown" class="secondary" disabled>Copy Markdown</button>
       </div>
       <div id="status" class="status">Ready.</div>
@@ -227,24 +230,58 @@
         statusEl.textContent = "Business intent is required.";
         return;
       }
+      const button = document.getElementById("run-design");
+      button.disabled = true;
       statusEl.textContent = "Generating FortiGate artifact package...";
-      const response = await fetch(`${apiBase}/fortigate/design`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          intake: intake(),
-          existing_config: document.getElementById("existing-config").value,
-          thread_id: document.getElementById("thread-id").value || undefined
-        })
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        statusEl.textContent = `Error: ${data.detail || response.statusText}`;
-        rawEl.textContent = JSON.stringify(data, null, 2);
-        return;
+      try {
+        const response = await fetch(`${apiBase}/fortigate/design`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            intake: intake(),
+            existing_config: document.getElementById("existing-config").value,
+            thread_id: document.getElementById("thread-id").value || undefined
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          statusEl.textContent = `Error: ${data.detail || response.statusText}`;
+          rawEl.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        renderRun(data);
+        statusEl.textContent = `Draft package generated: ${data.run_id}`;
+      } catch (error) {
+        statusEl.textContent = `Browser error: ${error.message}`;
+        rawEl.textContent = String(error.stack || error);
+      } finally {
+        button.disabled = false;
       }
-      renderRun(data);
-      statusEl.textContent = `Draft package generated: ${data.run_id}`;
+    });
+
+    document.getElementById("load-latest").addEventListener("click", async () => {
+      statusEl.textContent = "Loading latest run...";
+      try {
+        const listResponse = await fetch(`${apiBase}/fortigate/runs?limit=1`);
+        const runs = await listResponse.json();
+        if (!listResponse.ok || !runs.length) {
+          statusEl.textContent = "No FortiGate runs found.";
+          rawEl.textContent = JSON.stringify(runs, null, 2);
+          return;
+        }
+        const runResponse = await fetch(`${apiBase}/fortigate/runs/${runs[0].run_id}`);
+        const run = await runResponse.json();
+        if (!runResponse.ok) {
+          statusEl.textContent = `Error: ${run.detail || runResponse.statusText}`;
+          rawEl.textContent = JSON.stringify(run, null, 2);
+          return;
+        }
+        renderRun(run);
+        statusEl.textContent = `Loaded latest run: ${run.run_id}`;
+      } catch (error) {
+        statusEl.textContent = `Browser error: ${error.message}`;
+        rawEl.textContent = String(error.stack || error);
+      }
     });
 
     copyButton.addEventListener("click", async () => {

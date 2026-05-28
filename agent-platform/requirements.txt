@@ -11,3 +11,4 @@ langchain
 httpx
 beautifulsoup4
 neo4j
+pypdf

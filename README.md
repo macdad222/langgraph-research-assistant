@@ -27,6 +27,8 @@ retrieve_memory
 Key capabilities:
 
 - Web-based Research Assistant UI.
+- Web-based Network Design Helper for standards-aware design chat and FortiGate handoff payloads.
+- Artifact-only FortiGate provisioning agent for draft designs, config packages, standards checks, and review.
 - LangGraph state machine for research workflows.
 - LiteLLM model gateway to an OpenAI-compatible model server.
 - Redis checkpointing for graph state and interrupt/resume.
@@ -94,6 +96,13 @@ Then open:
 
 ```text
 http://localhost:8080
+```
+
+Additional local web tools:
+
+```text
+http://localhost:8080/network-design
+http://localhost:8080/fortigate
 ```
 
 The Linux deployment templates run LiteLLM and the LangGraph API with host networking so LiteLLM logs see the real LAN host address instead of Docker bridge addresses such as `172.x.x.x`. For your own environment, update `.env`, Compose files, and frontend API base URLs as needed.

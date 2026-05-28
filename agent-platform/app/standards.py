@@ -1,16 +1,35 @@
 import hashlib
+import html
 import json
 import os
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from app.fortigate_models import FortiGateStandardChunk
 
 
 DEFAULT_STANDARDS_DIR = Path(os.getenv("FORTIGATE_STANDARDS_DIR", "/data/fortigate-standards/raw"))
 DEFAULT_INDEX_PATH = Path(os.getenv("FORTIGATE_STANDARDS_INDEX", "/data/fortigate-standards/index.json"))
-SUPPORTED_SUFFIXES = {".md", ".markdown", ".txt", ".conf", ".cfg", ".yaml", ".yml", ".json"}
+SUPPORTED_SUFFIXES = {
+    ".md",
+    ".markdown",
+    ".txt",
+    ".conf",
+    ".cfg",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".html",
+    ".htm",
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+}
+MAX_EXTRACTED_CHARS_PER_FILE = int(os.getenv("FORTIGATE_STANDARDS_MAX_FILE_CHARS", "500000"))
 
 
 def _chunk_id(document: str, ordinal: int, text: str) -> str:
@@ -55,6 +74,97 @@ def _split_chunks(text: str, max_chars: int = 1400) -> list[str]:
     return chunks
 
 
+def _is_noise_file(path: Path) -> bool:
+    parts = set(path.parts)
+    return (
+        "__MACOSX" in parts
+        or path.name == ".DS_Store"
+        or path.name.startswith("._")
+        or path.suffix.lower() == ".ds_store"
+    )
+
+
+def _normalize_text(text: str) -> str:
+    text = html.unescape(text)
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()[:MAX_EXTRACTED_CHARS_PER_FILE]
+
+
+def _xml_texts(raw: bytes) -> list[str]:
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return []
+    texts: list[str] = []
+    for elem in root.iter():
+        if elem.text and elem.text.strip():
+            texts.append(elem.text.strip())
+    return texts
+
+
+def _read_office_zip(path: Path, prefixes: tuple[str, ...]) -> str:
+    texts: list[str] = []
+    with zipfile.ZipFile(path) as archive:
+        for name in sorted(archive.namelist()):
+            if not name.endswith(".xml"):
+                continue
+            if not any(name.startswith(prefix) for prefix in prefixes):
+                continue
+            texts.extend(_xml_texts(archive.read(name)))
+            if sum(len(item) for item in texts) > MAX_EXTRACTED_CHARS_PER_FILE:
+                break
+    return _normalize_text("\n".join(texts))
+
+
+def _read_pdf(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+    texts: list[str] = []
+    reader = PdfReader(str(path))
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        if text.strip():
+            texts.append(text)
+        if sum(len(item) for item in texts) > MAX_EXTRACTED_CHARS_PER_FILE:
+            break
+    return _normalize_text("\n".join(texts))
+
+
+def _read_html(path: Path) -> str:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return _normalize_text(path.read_text(encoding="utf-8", errors="replace"))
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    return _normalize_text(soup.get_text("\n", strip=True))
+
+
+def _read_document_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".md", ".markdown", ".txt", ".conf", ".cfg", ".yaml", ".yml", ".json"}:
+        return _normalize_text(path.read_text(encoding="utf-8", errors="replace"))
+    if suffix in {".html", ".htm"}:
+        return _read_html(path)
+    if suffix == ".pdf":
+        return _read_pdf(path)
+    if suffix == ".docx":
+        return _read_office_zip(path, ("word/document", "word/header", "word/footer"))
+    if suffix == ".pptx":
+        return _read_office_zip(path, ("ppt/slides/slide", "ppt/notesSlides/notesSlide"))
+    if suffix == ".xlsx":
+        return _read_office_zip(path, ("xl/sharedStrings", "xl/worksheets/sheet"))
+    return ""
+
+
 def ingest_standards(source_dir: str | Path = DEFAULT_STANDARDS_DIR, index_path: str | Path = DEFAULT_INDEX_PATH) -> dict[str, Any]:
     source = Path(source_dir)
     index = Path(index_path)
@@ -63,11 +173,15 @@ def ingest_standards(source_dir: str | Path = DEFAULT_STANDARDS_DIR, index_path:
 
     if source.exists():
         for path in sorted(item for item in source.rglob("*") if item.is_file()):
+            if _is_noise_file(path):
+                continue
             if path.suffix.lower() not in SUPPORTED_SUFFIXES:
                 continue
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                text = _read_document_text(path)
             except Exception:
+                continue
+            if not text.strip():
                 continue
             document_count += 1
             for ordinal, chunk_text in enumerate(_split_chunks(text), start=1):
@@ -105,15 +219,33 @@ def load_standard_chunks(index_path: str | Path = DEFAULT_INDEX_PATH) -> list[Fo
 
 def search_standards(query: str, limit: int = 8, index_path: str | Path = DEFAULT_INDEX_PATH) -> list[FortiGateStandardChunk]:
     terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9_-]{3,}", query)]
+    phrase = " ".join(terms)
     chunks = load_standard_chunks(index_path)
     scored: list[FortiGateStandardChunk] = []
     for chunk in chunks:
-        haystack = f"{chunk.document} {chunk.topic} {chunk.text}".lower()
+        title = f"{chunk.document} {chunk.source_path}".lower()
+        text = chunk.text.lower()
+        haystack = f"{title} {chunk.topic} {text}"
         score = 0
+        if phrase and phrase in title:
+            score += 40
+        elif phrase and phrase in text:
+            score += 25
+        matched_terms = 0
         for term in terms:
-            if term in haystack:
-                score += 5
-            score += haystack.count(term)
+            term_score = 0
+            if term in title:
+                term_score += 12
+            if term in text:
+                term_score += 4
+                term_score += min(text.count(term), 5)
+            if term_score:
+                matched_terms += 1
+                score += term_score
+        if terms:
+            score += matched_terms * 4
+            if matched_terms == len(terms):
+                score += 20
         if score:
             scored.append(chunk.model_copy(update={"score": score}))
     scored.sort(key=lambda item: item.score, reverse=True)

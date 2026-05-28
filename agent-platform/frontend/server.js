@@ -5,6 +5,7 @@ const path = require("node:path");
 const port = Number(process.env.PORT || 8080);
 const indexPath = path.join(__dirname, "index.html");
 const fortigatePath = path.join(__dirname, "fortigate.html");
+const networkDesignPath = path.join(__dirname, "network-design.html");
 
 const server = http.createServer((req, res) => {
   if (req.url === "/" || req.url === "/index.html") {
@@ -16,6 +17,13 @@ const server = http.createServer((req, res) => {
 
   if (req.url === "/fortigate" || req.url === "/fortigate.html") {
     const html = fs.readFileSync(fortigatePath, "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+    return;
+  }
+
+  if (req.url === "/network-design" || req.url === "/network-design.html") {
+    const html = fs.readFileSync(networkDesignPath, "utf8");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(html);
     return;
