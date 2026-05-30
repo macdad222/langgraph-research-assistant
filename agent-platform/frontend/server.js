@@ -1,10 +1,12 @@
 const http = require("node:http");
+const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
 const querystring = require("node:querystring");
 
 const port = Number(process.env.PORT || 8080);
 const frontendPassword = process.env.FRONTEND_PASSWORD || "fortidesignagent";
+const apiProxyTarget = process.env.API_PROXY_TARGET || "http://agent.lab.internal:8001";
 const authCookie = "fortigate_frontend_auth=1";
 const indexPath = path.join(__dirname, "index.html");
 const fortigatePath = path.join(__dirname, "fortigate.html");
@@ -46,6 +48,35 @@ function renderLogin(error = "") {
 </html>`;
 }
 
+function proxyApi(req, res) {
+  const target = new URL(apiProxyTarget);
+  const upstreamPath = req.url.slice("/api".length) || "/";
+  const upstreamUrl = new URL(upstreamPath, target);
+  const client = upstreamUrl.protocol === "https:" ? https : http;
+  const headers = { ...req.headers, host: upstreamUrl.host };
+  delete headers.connection;
+  delete headers["content-length"];
+
+  const proxyReq = client.request(
+    upstreamUrl,
+    {
+      method: req.method,
+      headers,
+    },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+      proxyRes.pipe(res);
+    },
+  );
+
+  proxyReq.on("error", (error) => {
+    res.writeHead(502, { "content-type": "application/json" });
+    res.end(JSON.stringify({ detail: `API proxy failed: ${error.message}` }));
+  });
+
+  req.pipe(proxyReq);
+}
+
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -84,6 +115,11 @@ const server = http.createServer((req, res) => {
   if (!isAuthenticated(req)) {
     res.writeHead(302, { location: "/login" });
     res.end();
+    return;
+  }
+
+  if (req.url.startsWith("/api/") || req.url === "/api") {
+    proxyApi(req, res);
     return;
   }
 
