@@ -302,7 +302,15 @@
             <div class="summary-box"><strong>Status</strong>${escapeHtml(run.status || "n/a")}</div>
             <div class="summary-box"><strong>Qwen Judge</strong>${escapeHtml(run.judge_report?.verdict || "n/a")}</div>
             <div class="summary-box"><strong>Validation</strong>${run.validation_report?.passed ? "passed" : "needs review"}</div>
+            <div class="summary-box"><strong>Auto Repair Passes</strong>${escapeHtml(run.autonomous_repair_iterations || 0)}</div>
           </div>
+          <h3>Autonomous QA</h3>
+          <pre>${escapeHtml(JSON.stringify({
+            auto_fixed_items: run.auto_fixed_items || [],
+            requires_human_input: run.requires_human_input || [],
+            intent_completeness_report: run.intent_completeness_report || {},
+            cli_completeness_report: run.cli_completeness_report || {}
+          }, null, 2))}</pre>
         </div>
       `;
     }

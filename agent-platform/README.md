@@ -135,10 +135,15 @@ generate_config_artifacts
   -> validate_config
   -> check_standards
   -> risk_review
+  -> check_cli_contract
+  -> optional autonomous_repair_config_artifacts
   -> frontier_model_judge
+  -> optional autonomous_repair_config_artifacts
 ```
 
-Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=0.7` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model.
+The graph now builds an `implementation_intent` contract before CLI generation. That contract covers VLANs, DHCP decisions, SD-WAN behavior, object inventory, and the firewall policy matrix. Deterministic completeness gates check both the intent and generated CLI before Qwen judge review.
+
+Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=0.7` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model. Set `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT=2` to control how many autonomous repair passes can run before the system asks for human review.
 
 ## Human In The Loop
 

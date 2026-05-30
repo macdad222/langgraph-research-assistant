@@ -32,7 +32,7 @@ from app.fortigate_models import (
     FortiGateStandardsSearchResponse,
     FortiGateValidationReport,
 )
-from app.fortigate_policy import check_standards_compliance, review_risk, validate_config_artifacts
+from app.fortigate_policy import check_cli_completeness, check_standards_compliance, review_risk, validate_config_artifacts
 from app.graph import build_graph, initial_messages
 from app.memory import Neo4jResearchMemory
 from app.network_design import build_network_design_graph
@@ -533,6 +533,12 @@ def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
         json.dumps(response.fortigate_design, indent=2),
         "```",
         "",
+        "## Implementation Intent",
+        "",
+        "```json",
+        json.dumps(response.implementation_intent, indent=2),
+        "```",
+        "",
         "## Change Impact",
         "",
         "```json",
@@ -556,6 +562,21 @@ def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
         bullets(response.validation_report.blocking_issues),
         "### Warnings",
         bullets(response.validation_report.warnings),
+        "",
+        "## Completeness Reports",
+        "",
+        "### Intent Completeness",
+        "```json",
+        json.dumps(response.intent_completeness_report, indent=2),
+        "```",
+        "### CLI Completeness",
+        "```json",
+        json.dumps(response.cli_completeness_report, indent=2),
+        "```",
+        "### Autonomous Fixes",
+        bullets(response.auto_fixed_items),
+        "### Remaining Human Inputs",
+        bullets(response.requires_human_input),
         "",
         "## Standards Report",
         "",
@@ -688,11 +709,17 @@ def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_
         missing_questions=result.get("missing_questions", []),
         logical_design=result.get("logical_design", {}),
         fortigate_design=result.get("fortigate_design", {}),
+        implementation_intent=result.get("implementation_intent", {}),
+        intent_completeness_report=result.get("intent_completeness_report", {}),
         change_impact=result.get("change_impact", {}),
         config_artifacts=result.get("config_artifacts", {}),
+        cli_completeness_report=result.get("cli_completeness_report", {}),
         validation_report=FortiGateValidationReport(**result.get("validation_report", {})),
         standards_report=FortiGateValidationReport(**result.get("standards_report", {})),
         risk_report=FortiGateValidationReport(**result.get("risk_report", {})),
+        autonomous_repair_iterations=int(result.get("autonomous_repair_iterations", 0) or 0),
+        auto_fixed_items=result.get("auto_fixed_items", []),
+        requires_human_input=result.get("requires_human_input", []),
         judge_report=judge_report,
         review_questions=build_fortigate_review_questions(judge_report),
         human_review=(
@@ -747,11 +774,17 @@ def _fortigate_judge_packet(run: FortiGateRunResponse) -> dict[str, Any]:
         "current_config_summary": run.current_config_summary.model_dump(),
         "logical_design": run.logical_design,
         "fortigate_design": run.fortigate_design,
+        "implementation_intent": run.implementation_intent,
+        "intent_completeness_report": run.intent_completeness_report,
         "change_impact": run.change_impact,
         "config_artifacts": run.config_artifacts,
+        "cli_completeness_report": run.cli_completeness_report,
         "validation_report": run.validation_report.model_dump(),
         "standards_report": run.standards_report.model_dump(),
         "risk_report": run.risk_report.model_dump(),
+        "autonomous_repair_iterations": run.autonomous_repair_iterations,
+        "auto_fixed_items": run.auto_fixed_items,
+        "requires_human_input": run.requires_human_input,
         "standards": [item.model_dump() for item in run.standards],
     }
 
@@ -761,6 +794,7 @@ def _fortigate_policy_state(run: FortiGateRunResponse) -> dict[str, Any]:
         "intake": run.intake.model_dump(),
         "current_config_summary": run.current_config_summary.model_dump(),
         "standards": [item.model_dump() for item in run.standards],
+        "implementation_intent": run.implementation_intent,
         "config_artifacts": run.config_artifacts,
     }
 
@@ -812,6 +846,7 @@ async def _revise_fortigate_config_from_review(run: FortiGateRunResponse, review
     run.validation_report = validate_config_artifacts(policy_state)
     run.standards_report = check_standards_compliance(policy_state)
     run.risk_report = review_risk(policy_state)
+    run.cli_completeness_report = check_cli_completeness(policy_state).model_dump()
 
 
 async def _interpret_fortigate_review_answers(run: FortiGateRunResponse, review: FortiGateHumanReview) -> list[dict[str, Any]]:
@@ -1124,6 +1159,7 @@ async def lifespan(app: FastAPI):
         app.state.fortigate_builder_review_temperature = get_float_env("FORTIGATE_BUILDER_REVIEW_TEMPERATURE", 0.7)
         app.state.fortigate_config_refinement_mode = os.getenv("FORTIGATE_CONFIG_REFINEMENT_MODE", "pre_judge")
         app.state.fortigate_config_refiner_model_name = os.getenv("FORTIGATE_CONFIG_REFINER_MODEL_NAME", app.state.fortigate_judge_model_name)
+        app.state.fortigate_autonomous_repair_limit = int(get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_LIMIT", 2))
         app.state.langfuse = None
         app.state.langfuse_handler = None
         app.state.research_memory = Neo4jResearchMemory.from_env()
@@ -1187,6 +1223,7 @@ async def lifespan(app: FastAPI):
             config_refiner_model=refiner_model,
             config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
             config_refinement_mode=app.state.fortigate_config_refinement_mode,
+            autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
         )
         app.state.interactive_fortigate_graph = build_fortigate_graph(
             llm,
@@ -1201,6 +1238,7 @@ async def lifespan(app: FastAPI):
             config_refiner_model=refiner_model,
             config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
             config_refinement_mode=app.state.fortigate_config_refinement_mode,
+            autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
         )
         app.state.network_design_graph = build_network_design_graph(llm, checkpointer)
         try:

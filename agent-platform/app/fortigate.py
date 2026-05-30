@@ -17,7 +17,7 @@ from app.fortigate_models import (
     FortiGateQuestion,
     FortiGateStandardChunk,
 )
-from app.fortigate_policy import check_standards_compliance, review_risk, validate_config_artifacts
+from app.fortigate_policy import check_cli_completeness, check_intent_completeness, check_standards_compliance, review_risk, validate_config_artifacts
 from app.standards import retrieve_fortigate_standards
 
 
@@ -30,8 +30,12 @@ class FortiGateState(TypedDict, total=False):
     missing_questions: list[dict[str, Any]]
     logical_design: dict[str, Any]
     fortigate_design: dict[str, Any]
+    implementation_intent: dict[str, Any]
+    intent_completeness_report: dict[str, Any]
+    intent_repaired: bool
     change_impact: dict[str, Any]
     config_artifacts: dict[str, Any]
+    cli_completeness_report: dict[str, Any]
     validation_report: dict[str, Any]
     standards_report: dict[str, Any]
     risk_report: dict[str, Any]
@@ -39,6 +43,9 @@ class FortiGateState(TypedDict, total=False):
     config_refinement: dict[str, Any]
     judge_report: dict[str, Any]
     judge_iterations: int
+    autonomous_repair_iterations: int
+    auto_fixed_items: list[str]
+    requires_human_input: list[str]
     human_review_decision: str
     human_review_notes: str
     human_selected_issues: list[str]
@@ -111,6 +118,77 @@ def _judge_review_item_count(report: dict[str, Any]) -> int:
         for item in _as_list(report.get(field)):
             items.add(f"{field}:{item.lower()}")
     return len(items)
+
+
+def _judge_item_texts(report: dict[str, Any]) -> list[str]:
+    fields = (
+        "blocking_issues",
+        "warnings",
+        "standards_concerns",
+        "config_risks",
+        "missing_questions",
+        "recommended_revisions",
+        "human_reviewer_focus",
+    )
+    items: list[str] = []
+    for field in fields:
+        for item in _as_list(report.get(field)):
+            text = str(item).strip()
+            if text:
+                items.append(f"{field}: {text}")
+    return items
+
+
+def _classify_judge_items(report: dict[str, Any]) -> tuple[list[str], list[str]]:
+    auto_keywords = (
+        "syntax",
+        "invalid",
+        "missing",
+        "undefined",
+        "not defined",
+        "dhcp",
+        "sd-wan",
+        "sdwan",
+        "health check",
+        "route",
+        "object",
+        "profile",
+        "pool",
+        "policy",
+        "logtraffic",
+        "logging",
+        "segmentation",
+        "deny",
+    )
+    human_keywords = (
+        "actual value",
+        "specific source",
+        "source ip",
+        "public ip",
+        "psk",
+        "password",
+        "secret",
+        "community",
+        "syslog",
+        "snmp",
+        "dns server",
+        "confirm with",
+        "client",
+        "preference",
+        "business decision",
+        "accept risk",
+    )
+    auto_fixable: list[str] = []
+    requires_human: list[str] = []
+    for item in _judge_item_texts(report):
+        lowered = item.lower()
+        if any(keyword in lowered for keyword in human_keywords):
+            requires_human.append(item)
+        elif any(keyword in lowered for keyword in auto_keywords):
+            auto_fixable.append(item)
+        else:
+            requires_human.append(item)
+    return auto_fixable, requires_human
 
 
 def _object_name(block: str) -> str:
@@ -285,6 +363,7 @@ def build_fortigate_graph(
     config_refiner_model: ChatOpenAI | None = None,
     config_refiner_model_name: str = "",
     config_refinement_mode: str = "pre_judge",
+    autonomous_repair_limit: int = 2,
 ):
     normalized_builder_review_mode = builder_review_mode if builder_review_mode in {"off", "pre_refine"} else "pre_refine"
     normalized_refinement_mode = config_refinement_mode if config_refinement_mode in {"off", "pre_judge"} else "pre_judge"
@@ -362,6 +441,114 @@ def build_fortigate_graph(
         design = data.get("fortigate_design") if isinstance(data.get("fortigate_design"), dict) else data
         return _trace_update(state, {"fortigate_design": design or {}}, "build_fortigate_design", started_at, started_perf, "Mapped logical design to FortiGate constructs.")
 
+    async def build_implementation_intent(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        response = await model.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with key implementation_intent. Build a FortiGate implementation contract that the CLI "
+                        "must satisfy before any config is generated. Include keys: interface_inventory, dhcp_plan, sdwan_plan, "
+                        "policy_matrix, object_inventory, logging_plan, assumptions, requires_human_input. For every LAN/VLAN, "
+                        "include name, vlan_id when known, subnet, gateway, zone, role, and dhcp_mode. For DHCP, decide enable, "
+                        "disable, or needs_human_input; enable DHCP for user/guest VLANs when subnet and gateway are known unless "
+                        "the intake says otherwise. For dual-WAN, include SD-WAN members, health_checks, steering_rules, and "
+                        "default_route_behavior. For firewall policies, build a complete policy matrix with source, destination, "
+                        "service, action, nat, logging, inspection_profile, and rationale. Put missing site-specific values in "
+                        "requires_human_input rather than inventing them."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": state.get("intake", {}),
+                            "logical_design": state.get("logical_design", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "current_config_summary": state.get("current_config_summary", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        intent = data.get("implementation_intent") if isinstance(data.get("implementation_intent"), dict) else data
+        return _trace_update(
+            state,
+            {
+                "implementation_intent": intent or {},
+                "requires_human_input": [str(item) for item in _as_list((intent or {}).get("requires_human_input"))],
+            },
+            "build_implementation_intent",
+            started_at,
+            started_perf,
+            "Built structured implementation intent contract.",
+        )
+
+    async def check_intent_contract(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        report = check_intent_completeness(state).model_dump()
+        return _trace_update(
+            state,
+            {"intent_completeness_report": report},
+            "check_intent_contract",
+            started_at,
+            started_perf,
+            f"Intent completeness produced {len(report.get('warnings', []))} warning(s).",
+        )
+
+    async def repair_implementation_intent(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        response = await model.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with key implementation_intent. Repair the FortiGate implementation contract using "
+                        "the completeness report. Fill auto-fixable gaps such as DHCP decisions, SD-WAN members/health checks, "
+                        "policy matrix rows, object inventory, and logging plan. Do not invent real site values; keep those in "
+                        "requires_human_input."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": state.get("intake", {}),
+                            "logical_design": state.get("logical_design", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "implementation_intent": state.get("implementation_intent", {}),
+                            "intent_completeness_report": state.get("intent_completeness_report", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        intent = data.get("implementation_intent") if isinstance(data.get("implementation_intent"), dict) else data
+        fixed_items = [f"intent: {item}" for item in state.get("intent_completeness_report", {}).get("warnings", [])]
+        return _trace_update(
+            state,
+            {
+                "implementation_intent": intent or state.get("implementation_intent", {}),
+                "auto_fixed_items": [*state.get("auto_fixed_items", []), *fixed_items],
+                "requires_human_input": [str(item) for item in _as_list((intent or {}).get("requires_human_input"))] or state.get("requires_human_input", []),
+                "intent_repaired": True,
+            },
+            "repair_implementation_intent",
+            started_at,
+            started_perf,
+            f"Repaired implementation intent for {len(fixed_items)} item(s).",
+        )
+
+    def route_after_intent_check(state: FortiGateState) -> str:
+        report = state.get("intent_completeness_report", {})
+        warnings = report.get("warnings", [])
+        if warnings and not state.get("intent_repaired"):
+            return "repair"
+        return "continue"
+
     async def analyze_change_impact(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         summary = state.get("current_config_summary", {})
@@ -392,7 +579,20 @@ def build_fortigate_graph(
                         "clear placeholders in the CLI. The CLI must be a draft only and must not claim it was applied."
                     )
                 ),
-                HumanMessage(content=json.dumps({"intake": state.get("intake", {}), "current_config_summary": state.get("current_config_summary", {}), "fortigate_design": state.get("fortigate_design", {}), "change_impact": state.get("change_impact", {}), "standards": _standards_payload(state.get("standards", []))}, indent=2)),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": state.get("intake", {}),
+                            "current_config_summary": state.get("current_config_summary", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "implementation_intent": state.get("implementation_intent", {}),
+                            "intent_completeness_report": state.get("intent_completeness_report", {}),
+                            "change_impact": state.get("change_impact", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
             ]
         )
         data = _extract_json_object(str(response.content))
@@ -416,6 +616,94 @@ def build_fortigate_graph(
         started_at, started_perf = _trace_start()
         report = review_risk(state).model_dump()
         return _trace_update(state, {"risk_report": report}, "risk_review", started_at, started_perf, f"Risk review produced {len(report.get('warnings', []))} warning(s).")
+
+    async def check_cli_contract(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        report = check_cli_completeness(state).model_dump()
+        return _trace_update(
+            state,
+            {"cli_completeness_report": report},
+            "check_cli_contract",
+            started_at,
+            started_perf,
+            f"CLI completeness produced {len(report.get('warnings', []))} warning(s) and {len(report.get('blocking_issues', []))} blocker(s).",
+        )
+
+    async def autonomous_repair_config_artifacts(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        iteration = int(state.get("autonomous_repair_iterations", 0) or 0) + 1
+        report = state.get("judge_report", {})
+        auto_fixable, requires_human = _classify_judge_items(report)
+        local_findings = [
+            *state.get("cli_completeness_report", {}).get("blocking_issues", []),
+            *state.get("cli_completeness_report", {}).get("warnings", []),
+            *state.get("validation_report", {}).get("blocking_issues", []),
+            *state.get("validation_report", {}).get("warnings", []),
+            *state.get("standards_report", {}).get("warnings", []),
+            *state.get("risk_report", {}).get("warnings", []),
+        ]
+        response = await model.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with keys config_artifacts, auto_fixed_items, requires_human_input. Perform an "
+                        "autonomous FortiGate config repair pass. Fix only engineering issues that do not require real site "
+                        "values or business decisions: syntax, DHCP sections, SD-WAN health checks/services/routes, missing "
+                        "objects/profiles/pools, missing logging, policy matrix mismatches, and explicit deny/segmentation gaps. "
+                        "Do not invent public IPs, PSKs, passwords, syslog/SNMP/DNS targets, or admin source ranges; list those "
+                        "under requires_human_input. Preserve full CLI context, safety labels, rollback plan, and standards citations."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "iteration": iteration,
+                            "intake": state.get("intake", {}),
+                            "implementation_intent": state.get("implementation_intent", {}),
+                            "current_config_artifacts": state.get("config_artifacts", {}),
+                            "local_findings": local_findings,
+                            "judge_report": report,
+                            "auto_fixable_judge_items": auto_fixable,
+                            "requires_human_judge_items": requires_human,
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
+        fixed = [str(item) for item in _as_list(data.get("auto_fixed_items"))]
+        human = [str(item) for item in _as_list(data.get("requires_human_input"))]
+        if artifacts.get("cli_config"):
+            artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
+            return _trace_update(
+                state,
+                {
+                    "config_artifacts": artifacts,
+                    "autonomous_repair_iterations": iteration,
+                    "auto_fixed_items": [*state.get("auto_fixed_items", []), *(fixed or auto_fixable or local_findings)],
+                    "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *requires_human, *human])),
+                },
+                "autonomous_repair_config_artifacts",
+                started_at,
+                started_perf,
+                f"Autonomous repair pass {iteration} updated config artifacts.",
+                branch="repaired",
+            )
+        return _trace_update(
+            state,
+            {
+                "autonomous_repair_iterations": iteration,
+                "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *requires_human, *human])),
+            },
+            "autonomous_repair_config_artifacts",
+            started_at,
+            started_perf,
+            f"Autonomous repair pass {iteration} returned no structured config update.",
+            branch="no-op",
+        )
 
     async def builder_review_config_artifacts(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
@@ -441,8 +729,11 @@ def build_fortigate_graph(
                             "current_config_summary": state.get("current_config_summary", {}),
                             "logical_design": state.get("logical_design", {}),
                             "fortigate_design": state.get("fortigate_design", {}),
+                            "implementation_intent": state.get("implementation_intent", {}),
                             "change_impact": state.get("change_impact", {}),
                             "config_artifacts": state.get("config_artifacts", {}),
+                            "intent_completeness_report": state.get("intent_completeness_report", {}),
+                            "cli_completeness_report": state.get("cli_completeness_report", {}),
                             "validation_report": state.get("validation_report", {}),
                             "standards_report": state.get("standards_report", {}),
                             "risk_report": state.get("risk_report", {}),
@@ -502,8 +793,11 @@ def build_fortigate_graph(
                             "current_config_summary": state.get("current_config_summary", {}),
                             "logical_design": state.get("logical_design", {}),
                             "fortigate_design": state.get("fortigate_design", {}),
+                            "implementation_intent": state.get("implementation_intent", {}),
                             "change_impact": state.get("change_impact", {}),
                             "config_artifacts": state.get("config_artifacts", {}),
+                            "intent_completeness_report": state.get("intent_completeness_report", {}),
+                            "cli_completeness_report": state.get("cli_completeness_report", {}),
                             "validation_report": state.get("validation_report", {}),
                             "standards_report": state.get("standards_report", {}),
                             "risk_report": state.get("risk_report", {}),
@@ -548,23 +842,46 @@ def build_fortigate_graph(
             "current_config_summary": state.get("current_config_summary", {}),
             "logical_design": state.get("logical_design", {}),
             "fortigate_design": state.get("fortigate_design", {}),
+            "implementation_intent": state.get("implementation_intent", {}),
+            "intent_completeness_report": state.get("intent_completeness_report", {}),
             "change_impact": state.get("change_impact", {}),
             "config_artifacts": state.get("config_artifacts", {}),
+            "cli_completeness_report": state.get("cli_completeness_report", {}),
             "validation_report": state.get("validation_report", {}),
             "standards_report": state.get("standards_report", {}),
             "risk_report": state.get("risk_report", {}),
             "config_builder_review": state.get("config_builder_review", {}),
             "config_refinement": state.get("config_refinement", {}),
+            "autonomous_repair_iterations": state.get("autonomous_repair_iterations", 0),
+            "auto_fixed_items": state.get("auto_fixed_items", []),
+            "requires_human_input": state.get("requires_human_input", []),
             "standards": _standards_payload(state.get("standards", [])),
         }
         report = await run_frontier_judge(judge_model or model, packet, judge_model_name=judge_model_name or getattr(model, "model_name", "configured-model"))
-        return _trace_update(state, {"judge_report": report.model_dump(), "judge_iterations": int(state.get("judge_iterations", 0) or 0) + 1}, "frontier_model_judge", started_at, started_perf, f"Judge verdict: {report.verdict}.", branch=report.verdict)
+        _, requires_human = _classify_judge_items(report.model_dump())
+        return _trace_update(
+            state,
+            {
+                "judge_report": report.model_dump(),
+                "judge_iterations": int(state.get("judge_iterations", 0) or 0) + 1,
+                "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *requires_human])),
+            },
+            "frontier_model_judge",
+            started_at,
+            started_perf,
+            f"Judge verdict: {report.verdict}.",
+            branch=report.verdict,
+        )
 
     def route_after_risk_review(state: FortiGateState) -> str:
         if normalized_builder_review_mode == "pre_refine" and not state.get("config_builder_review"):
             return "builder_review"
         if normalized_refinement_mode == "pre_judge" and not state.get("config_refinement"):
             return "refine"
+        cli_report = state.get("cli_completeness_report", {})
+        cli_findings = [*cli_report.get("blocking_issues", []), *cli_report.get("warnings", [])]
+        if cli_findings and int(state.get("autonomous_repair_iterations", 0) or 0) < autonomous_repair_limit:
+            return "autonomous_repair"
         return "judge"
 
     async def revise_after_judge(state: FortiGateState) -> FortiGateState:
@@ -632,6 +949,10 @@ def build_fortigate_graph(
         report = state.get("judge_report", {})
         verdict = report.get("verdict", "needs_revision")
         review_item_count = _judge_review_item_count(report)
+        auto_fixable, requires_human = _classify_judge_items(report)
+        if verdict == "needs_revision" and auto_fixable and int(state.get("autonomous_repair_iterations", 0) or 0) < autonomous_repair_limit:
+            if len(requires_human) < review_item_count:
+                return "autonomous_repair"
         if verdict == "needs_revision" and int(state.get("judge_iterations", 0) or 0) < 2:
             if review_item_count > 3:
                 return "regenerate"
@@ -688,11 +1009,16 @@ def build_fortigate_graph(
         graph.add_node("human_clarification_checkpoint", human_clarification_checkpoint)
     graph.add_node("build_logical_design", build_logical_design)
     graph.add_node("build_fortigate_design", build_fortigate_design)
+    graph.add_node("build_implementation_intent", build_implementation_intent)
+    graph.add_node("check_intent_contract", check_intent_contract)
+    graph.add_node("repair_implementation_intent", repair_implementation_intent)
     graph.add_node("analyze_change_impact", analyze_change_impact)
     graph.add_node("generate_config_artifacts", generate_config_artifacts)
     graph.add_node("validate_config", validate_config)
     graph.add_node("check_standards", check_standards)
     graph.add_node("risk_review", risk_review)
+    graph.add_node("check_cli_contract", check_cli_contract)
+    graph.add_node("autonomous_repair_config_artifacts", autonomous_repair_config_artifacts)
     graph.add_node("builder_review_config_artifacts", builder_review_config_artifacts)
     graph.add_node("refine_config_artifacts", refine_config_artifacts)
     graph.add_node("frontier_model_judge", frontier_model_judge)
@@ -712,19 +1038,35 @@ def build_fortigate_graph(
     else:
         graph.add_edge("identify_missing_inputs", "build_logical_design")
     graph.add_edge("build_logical_design", "build_fortigate_design")
-    graph.add_edge("build_fortigate_design", "analyze_change_impact")
+    graph.add_edge("build_fortigate_design", "build_implementation_intent")
+    graph.add_edge("build_implementation_intent", "check_intent_contract")
+    graph.add_conditional_edges("check_intent_contract", route_after_intent_check, {"repair": "repair_implementation_intent", "continue": "analyze_change_impact"})
+    graph.add_edge("repair_implementation_intent", "check_intent_contract")
+    graph.add_edge("analyze_change_impact", "generate_config_artifacts")
     graph.add_edge("analyze_change_impact", "generate_config_artifacts")
     graph.add_edge("generate_config_artifacts", "validate_config")
     graph.add_edge("validate_config", "check_standards")
     graph.add_edge("check_standards", "risk_review")
+    graph.add_edge("risk_review", "check_cli_contract")
     graph.add_conditional_edges(
-        "risk_review",
+        "check_cli_contract",
         route_after_risk_review,
-        {"builder_review": "builder_review_config_artifacts", "refine": "refine_config_artifacts", "judge": "frontier_model_judge"},
+        {
+            "builder_review": "builder_review_config_artifacts",
+            "refine": "refine_config_artifacts",
+            "autonomous_repair": "autonomous_repair_config_artifacts",
+            "judge": "frontier_model_judge",
+        },
     )
     graph.add_edge("builder_review_config_artifacts", "validate_config")
     graph.add_edge("refine_config_artifacts", "validate_config")
-    judge_routes = {"revise": "revise_after_judge", "regenerate": "regenerate_config_after_judge", "finalize": "finalize_package"}
+    graph.add_edge("autonomous_repair_config_artifacts", "validate_config")
+    judge_routes = {
+        "autonomous_repair": "autonomous_repair_config_artifacts",
+        "revise": "revise_after_judge",
+        "regenerate": "regenerate_config_after_judge",
+        "finalize": "finalize_package",
+    }
     if human_review_interrupt:
         judge_routes["human_review"] = "human_review_checkpoint"
     graph.add_conditional_edges("frontier_model_judge", route_after_judge, judge_routes)

@@ -139,11 +139,17 @@ class FortiGateRunResponse(BaseModel):
     missing_questions: list[FortiGateQuestion] = Field(default_factory=list)
     logical_design: dict[str, Any] = Field(default_factory=dict)
     fortigate_design: dict[str, Any] = Field(default_factory=dict)
+    implementation_intent: dict[str, Any] = Field(default_factory=dict)
+    intent_completeness_report: dict[str, Any] = Field(default_factory=dict)
     change_impact: dict[str, Any] = Field(default_factory=dict)
     config_artifacts: dict[str, Any] = Field(default_factory=dict)
+    cli_completeness_report: dict[str, Any] = Field(default_factory=dict)
     validation_report: FortiGateValidationReport = Field(default_factory=FortiGateValidationReport)
     standards_report: FortiGateValidationReport = Field(default_factory=FortiGateValidationReport)
     risk_report: FortiGateValidationReport = Field(default_factory=FortiGateValidationReport)
+    autonomous_repair_iterations: int = 0
+    auto_fixed_items: list[str] = Field(default_factory=list)
+    requires_human_input: list[str] = Field(default_factory=list)
     judge_report: FortiGateJudgeReport = Field(default_factory=FortiGateJudgeReport)
     review_questions: list[FortiGateReviewQuestion] = Field(default_factory=list)
     human_review: Optional[FortiGateHumanReview] = None
