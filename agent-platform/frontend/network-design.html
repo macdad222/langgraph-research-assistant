@@ -185,6 +185,42 @@
     }
     .side-head h2 { margin: 0 0 4px; font-size: 18px; }
     .links a { color: #7dd3fc; display: inline-block; margin-left: 8px; font-size: 13px; }
+    .step-card {
+      border: 1px solid rgba(56, 189, 248, .24);
+      border-radius: 18px;
+      background: rgba(2, 6, 23, .42);
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+    .step-card.primary {
+      border-color: rgba(56, 189, 248, .55);
+      background: rgba(8, 47, 73, .34);
+    }
+    .step-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      font-weight: 850;
+      color: #dbeafe;
+    }
+    .step-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #06111f;
+      font-weight: 900;
+    }
+    .action-stack { display: grid; gap: 8px; }
+    .action-stack button { width: 100%; }
+    .mini-summary { display: grid; gap: 8px; }
+    .mini-row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid rgba(148, 163, 184, .12); padding-bottom: 6px; color: var(--muted); font-size: 13px; }
+    .mini-row strong { color: var(--text); }
+    details summary { cursor: pointer; color: #dbeafe; font-weight: 750; margin-bottom: 10px; }
     .card {
       border: 1px solid rgba(148, 163, 184, .20);
       border-radius: 16px;
@@ -270,8 +306,8 @@
     <aside>
       <div class="side-head">
         <div>
-          <h2>Design Context</h2>
-          <div class="status">These fields guide the chat and package generation.</div>
+          <h2>Design Assistant</h2>
+          <div class="status">Chat first. Use the guided actions when you are ready for artifacts.</div>
         </div>
         <div class="links">
           <a href="/">Research</a>
@@ -279,8 +315,9 @@
         </div>
       </div>
 
-      <div class="card">
-        <h3>Required Basics</h3>
+      <div class="step-card primary">
+        <div class="step-title"><span class="step-number">1</span><span>Tell me about the site</span></div>
+        <p class="status">Fill only what you know. The chat can help discover the rest.</p>
         <div class="field row">
           <div>
             <label for="customer">Customer</label>
@@ -299,69 +336,72 @@
           <label for="thread-id">Thread ID</label>
           <input id="thread-id" value="network-design-ui" />
         </div>
+        <details>
+          <summary>Optional details</summary>
+          <div class="field row">
+            <div>
+              <label for="model">FortiGate Model</label>
+              <input id="model" placeholder="FortiGate 100F" />
+            </div>
+            <div>
+              <label for="fortios">FortiOS</label>
+              <input id="fortios" placeholder="7.4.x" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="context">Business Context</label>
+            <textarea id="context" placeholder="Who uses the site, critical apps, operational expectations."></textarea>
+          </div>
+          <div class="field">
+            <label for="constraints">Constraints</label>
+            <textarea id="constraints" placeholder="Known IP ranges, circuits, security requirements, change windows."></textarea>
+          </div>
+        </details>
       </div>
 
-      <div class="card">
-        <h3>Optional Details</h3>
-        <div class="field row">
-          <div>
-            <label for="model">FortiGate Model</label>
-            <input id="model" placeholder="FortiGate 100F" />
-          </div>
-          <div>
-            <label for="fortios">FortiOS</label>
-            <input id="fortios" placeholder="7.4.x" />
-          </div>
-        </div>
-        <div class="field">
-          <label for="context">Business Context</label>
-          <textarea id="context" placeholder="Who uses the site, critical apps, operational expectations."></textarea>
-        </div>
-        <div class="field">
-          <label for="constraints">Constraints</label>
-          <textarea id="constraints" placeholder="Known IP ranges, circuits, security requirements, change windows."></textarea>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>Actions</h3>
-        <div class="row">
-          <button id="run-design">Generate Package</button>
-          <button id="search-standards" class="secondary">Search Standards</button>
-        </div>
-        <div class="row" style="margin-top: 8px;">
-          <button id="load-latest" class="secondary">Load Latest</button>
-          <button id="clear-chat" class="secondary">Clear Chat</button>
-        </div>
-        <div class="row" style="margin-top: 8px;">
-          <button id="copy-markdown" class="secondary" disabled>Copy Markdown</button>
-          <button id="copy-handoff" class="secondary" disabled>Copy Handoff</button>
+      <div class="step-card">
+        <div class="step-title"><span class="step-number">2</span><span>Build the design package</span></div>
+        <p class="status">Use this after the chat has enough requirements. The package includes standards evidence and a FortiGate handoff.</p>
+        <div class="action-stack">
+          <button id="run-design">Generate Design Package</button>
+          <button id="search-standards" class="secondary">Preview Matching Standards</button>
+          <button id="load-latest" class="secondary">Load Latest Package</button>
         </div>
         <div id="status" class="status">Ready.</div>
       </div>
 
-      <div class="card">
-        <h3>Export Package Files</h3>
-        <div class="row">
+      <div class="step-card">
+        <div class="step-title"><span class="step-number">3</span><span>Create FortiGate config</span></div>
+        <p class="status">This sends the handoff to the FortiGate agent and Qwen judge. It remains draft-only.</p>
+        <div class="action-stack">
           <button id="generate-config" disabled>Generate FortiGate Config</button>
-        </div>
-        <div class="row" style="margin-top: 8px;">
-          <button id="download-design" class="secondary" disabled>Design .md</button>
-          <button id="download-config" class="secondary" disabled>Config .conf</button>
-        </div>
-        <div class="row" style="margin-top: 8px;">
-          <button id="download-audit" class="secondary" disabled>Audit .md</button>
-          <button id="download-json" class="secondary" disabled>Run .json</button>
+          <button id="copy-handoff" class="secondary" disabled>Copy Handoff JSON</button>
         </div>
         <div id="export-status" class="status">Generate a package first, then export files.</div>
       </div>
 
-      <div class="card">
-        <h3>Status</h3>
+      <div class="step-card">
+        <div class="step-title"><span class="step-number">4</span><span>Download files</span></div>
+        <div class="action-stack">
+          <button id="download-design" class="secondary" disabled>Download Design .md</button>
+          <button id="download-config" class="secondary" disabled>Download Config .conf</button>
+          <button id="download-audit" class="secondary" disabled>Download Audit .md</button>
+          <button id="download-json" class="secondary" disabled>Download Run .json</button>
+          <button id="copy-markdown" class="secondary" disabled>Copy Design Markdown</button>
+        </div>
+      </div>
+
+      <div class="step-card">
+        <div class="step-title"><span class="step-number">5</span><span>Status</span></div>
         <div class="pills">
           <span id="status-pill" class="pill">Status: n/a</span>
           <span id="standards-pill" class="pill">Standards: n/a</span>
           <span id="validation-pill" class="pill">Validation: n/a</span>
+        </div>
+        <div class="mini-summary" style="margin-top: 10px;">
+          <div class="mini-row"><span>Design package</span><strong id="design-ready">not ready</strong></div>
+          <div class="mini-row"><span>FortiGate config</span><strong id="config-ready">not ready</strong></div>
+          <div class="mini-row"><span>Downloads</span><strong id="downloads-ready">not ready</strong></div>
         </div>
         <div class="status"><a id="graph-link" href="/network-design/graph/mermaid" target="_blank" rel="noreferrer">Graph Mermaid</a></div>
       </div>
@@ -371,10 +411,10 @@
         <pre id="results"></pre>
       </div>
 
-      <div class="card">
-        <h3>Raw Response</h3>
+      <details class="card">
+        <summary>Raw Response</summary>
         <pre id="raw">{}</pre>
-      </div>
+      </details>
     </aside>
   </div>
 
@@ -398,6 +438,9 @@
     const downloadConfigButton = document.getElementById("download-config");
     const downloadAuditButton = document.getElementById("download-audit");
     const downloadJsonButton = document.getElementById("download-json");
+    const designReadyEl = document.getElementById("design-ready");
+    const configReadyEl = document.getElementById("config-ready");
+    const downloadsReadyEl = document.getElementById("downloads-ready");
     document.getElementById("graph-link").href = `${apiBase}/network-design/graph/mermaid`;
 
     function escapeHtml(value) {
@@ -759,7 +802,12 @@
       downloadJsonButton.disabled = !currentRun;
       downloadAuditButton.disabled = !currentRun;
       downloadConfigButton.disabled = true;
-      exportStatusEl.textContent = "Design package ready. Generate FortiGate config to download a .conf file.";
+      designReadyEl.textContent = "ready";
+      configReadyEl.textContent = "not generated";
+      downloadsReadyEl.textContent = "design/audit/json";
+      exportStatusEl.textContent = currentHandoff
+        ? "Design package ready. Generate FortiGate config to download a .conf file. This can take 1-2 minutes while the judge runs."
+        : "Design package ready, but no FortiGate handoff was returned. Re-run the package after adding FortiGate details.";
       document.getElementById("status-pill").textContent = `Status: ${run.status}`;
       document.getElementById("standards-pill").textContent = `Standards: ${(run.standards || []).length}`;
       document.getElementById("validation-pill").textContent = `Validation: ${run.validation_report?.passed ? "passed" : "needs review"}`;
@@ -784,6 +832,8 @@
       currentFortiGateRun = run;
       downloadConfigButton.disabled = !fortigateCli();
       downloadAuditButton.disabled = !currentRun;
+      configReadyEl.textContent = fortigateCli() ? "ready" : "needs review";
+      downloadsReadyEl.textContent = "all files";
       resultsCard.classList.remove("hidden");
       resultsEl.textContent = JSON.stringify({
         fortigate_run_id: run.run_id,
@@ -795,7 +845,9 @@
         audit_file: `${fileBase()}-audit.md`
       }, null, 2);
       rawEl.textContent = JSON.stringify({ network_design_run: currentRun, fortigate_run: run }, null, 2);
-      exportStatusEl.textContent = "FortiGate config ready. You can download the .conf and detailed audit file.";
+      const judgeStatus = run.judge_report?.verdict ? ` Judge verdict: ${run.judge_report.verdict}.` : "";
+      exportStatusEl.textContent = `FortiGate config ready. You can download the .conf and detailed audit file.${judgeStatus}`;
+      statusEl.textContent = `FortiGate configuration generated: ${run.run_id}`;
     }
 
     document.getElementById("send-message").addEventListener("click", () => sendMessage());
@@ -887,7 +939,7 @@
       }
     });
 
-    document.getElementById("clear-chat").addEventListener("click", () => {
+    document.getElementById("clear-chat")?.addEventListener("click", () => {
       messages.length = 0;
       currentMarkdown = "";
       currentHandoff = null;
@@ -900,6 +952,9 @@
       downloadConfigButton.disabled = true;
       downloadAuditButton.disabled = true;
       downloadJsonButton.disabled = true;
+      designReadyEl.textContent = "not ready";
+      configReadyEl.textContent = "not ready";
+      downloadsReadyEl.textContent = "not ready";
       rawEl.textContent = "{}";
       resultsCard.classList.add("hidden");
       renderMessages();
@@ -919,11 +974,16 @@
 
     generateConfigButton.addEventListener("click", async () => {
       if (!currentHandoff) {
-        exportStatusEl.textContent = "Generate a design package first.";
+        exportStatusEl.textContent = "Generate a design package first, or load the latest run if you refreshed the page.";
+        statusEl.textContent = "No FortiGate handoff is loaded yet.";
         return;
       }
+      const originalText = generateConfigButton.textContent;
       generateConfigButton.disabled = true;
-      exportStatusEl.textContent = "Generating FortiGate configuration artifact...";
+      generateConfigButton.textContent = "Generating...";
+      configReadyEl.textContent = "generating";
+      exportStatusEl.textContent = "Generating FortiGate configuration artifact and running the judge. This can take 1-2 minutes.";
+      statusEl.textContent = "FortiGate generation is running. Please wait for the Qwen judge pass to finish.";
       try {
         const response = await fetch(`${apiBase}/fortigate/design`, {
           method: "POST",
@@ -938,15 +998,18 @@
         const data = await response.json();
         if (!response.ok) {
           exportStatusEl.textContent = `Error: ${data.detail || response.statusText}`;
+          statusEl.textContent = "FortiGate generation failed. See Raw Response for details.";
           rawEl.textContent = JSON.stringify(data, null, 2);
           return;
         }
         renderFortiGateRun(data);
       } catch (error) {
         exportStatusEl.textContent = `Browser error: ${error.message}`;
+        statusEl.textContent = "Browser error while generating FortiGate config.";
         rawEl.textContent = String(error.stack || error);
       } finally {
         generateConfigButton.disabled = !currentHandoff;
+        generateConfigButton.textContent = originalText;
       }
     });
 

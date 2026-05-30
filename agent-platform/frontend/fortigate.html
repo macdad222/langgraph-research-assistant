@@ -23,7 +23,7 @@
     header > * { max-width: 1680px; margin-left: auto; margin-right: auto; }
     h1 { margin: 0 0 6px; font-size: 28px; }
     h2 { margin-top: 0; }
-    main { display: grid; grid-template-columns: minmax(360px, 440px) minmax(0, 1fr); gap: 20px; padding: 24px 32px 40px; max-width: 1680px; margin: 0 auto; }
+    main { display: grid; grid-template-columns: minmax(380px, 520px) minmax(0, 1fr); gap: 20px; padding: 24px 32px 40px; max-width: 1680px; margin: 0 auto; }
     .card { border: 1px solid rgba(148, 163, 184, 0.22); background: rgba(15, 23, 42, 0.96); border-radius: 18px; padding: 18px; box-shadow: 0 18px 45px rgba(0,0,0,.28); }
     .input-panel { align-self: start; position: sticky; top: 96px; }
     label { display: block; margin-bottom: 8px; color: #cbd5e1; font-weight: 650; }
@@ -43,6 +43,21 @@
     pre { overflow: auto; max-height: 520px; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: #020617; color: #cbd5e1; white-space: pre-wrap; }
     .tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
     .section { border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 16px; margin: 14px 0; background: rgba(2, 6, 23, .35); }
+    .step-list { display: grid; gap: 8px; margin-bottom: 16px; }
+    .step-button { display: flex; gap: 10px; align-items: flex-start; text-align: left; width: 100%; background: #111827; color: var(--text); border: 1px solid var(--line); }
+    .step-button.active { border-color: rgba(249, 115, 22, .8); background: rgba(67, 20, 7, .58); }
+    .step-button.done .step-number { background: rgba(134, 239, 172, .18); color: var(--ok); }
+    .step-number { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; border-radius: 999px; background: #020617; color: var(--accent); font-weight: 900; }
+    .step-title { font-weight: 850; }
+    .step-help { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.35; }
+    .step-panel { display: none; }
+    .step-panel.active { display: block; }
+    .wizard-actions { display: flex; gap: 10px; margin-top: 14px; }
+    .wizard-actions button { flex: 1; }
+    .download-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .summary-box { border: 1px solid rgba(148, 163, 184, .18); border-radius: 14px; padding: 12px; background: rgba(2, 6, 23, .42); }
+    .summary-box strong { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
     .review-panel { border-color: rgba(249, 115, 22, .65); background: rgba(67, 20, 7, .45); box-shadow: 0 0 0 1px rgba(249, 115, 22, .18) inset; }
     .review-panel h2 { color: #fed7aa; }
     .question-card { border: 1px solid rgba(251, 191, 36, .28); border-radius: 14px; padding: 12px; margin: 12px 0; background: rgba(15, 23, 42, .72); }
@@ -59,76 +74,124 @@
   </header>
   <main>
     <section class="card input-panel">
-      <div class="field">
-        <label for="request-type">Workflow</label>
-        <select id="request-type">
-          <option value="new_build">New FortiGate build</option>
-          <option value="modify_existing">Modify existing FortiGate</option>
-        </select>
+      <h2>Seven-Step Workflow</h2>
+      <div class="step-list" id="step-list">
+        <button class="step-button active" data-step="1"><span class="step-number">1</span><span><span class="step-title">Describe the site</span><span class="step-help">Workflow, site name, model, FortiOS, and business intent.</span></span></button>
+        <button class="step-button" data-step="2"><span class="step-number">2</span><span><span class="step-title">Add WAN/LAN details</span><span class="step-help">Circuits, VLANs, networks, and existing config if needed.</span></span></button>
+        <button class="step-button" data-step="3"><span class="step-number">3</span><span><span class="step-title">Add policy/logging</span><span class="step-help">Security intent, change window, rollback, and operational notes.</span></span></button>
+        <button class="step-button" data-step="4"><span class="step-number">4</span><span><span class="step-title">Generate draft</span><span class="step-help">Build the artifact-only package and Qwen judge report.</span></span></button>
+        <button class="step-button" data-step="5"><span class="step-number">5</span><span><span class="step-title">Answer judge questions</span><span class="step-help">Human review items appear at the top of the output.</span></span></button>
+        <button class="step-button" data-step="6"><span class="step-number">6</span><span><span class="step-title">Re-judge</span><span class="step-help">Submit answers to update config and send back to Qwen.</span></span></button>
+        <button class="step-button" data-step="7"><span class="step-number">7</span><span><span class="step-title">Download package</span><span class="step-help">Export Markdown, CLI config, JSON, or copy the package.</span></span></button>
       </div>
-      <div class="field row">
-        <div>
-          <label for="site-name">Site name</label>
-          <input id="site-name" placeholder="branch-001" />
+
+      <div class="step-panel active" data-panel="1">
+        <h2>Step 1: Describe the site</h2>
+        <div class="field">
+          <label for="request-type">Workflow</label>
+          <select id="request-type">
+            <option value="new_build">New FortiGate build</option>
+            <option value="modify_existing">Modify existing FortiGate</option>
+          </select>
         </div>
-        <div>
-          <label for="thread-id">Thread ID</label>
-          <input id="thread-id" value="fortigate-ui" />
+        <div class="field row">
+          <div>
+            <label for="site-name">Site name</label>
+            <input id="site-name" placeholder="branch-001" />
+          </div>
+          <div>
+            <label for="thread-id">Thread ID</label>
+            <input id="thread-id" value="fortigate-ui" />
+          </div>
         </div>
-      </div>
-      <div class="field row">
-        <div>
-          <label for="model">FortiGate model</label>
-          <input id="model" placeholder="FortiGate 100F" />
+        <div class="field row">
+          <div>
+            <label for="model">FortiGate model</label>
+            <input id="model" placeholder="FortiGate 100F" />
+          </div>
+          <div>
+            <label for="fortios">FortiOS</label>
+            <input id="fortios" placeholder="7.4.x" />
+          </div>
         </div>
-        <div>
-          <label for="fortios">FortiOS</label>
-          <input id="fortios" placeholder="7.4.x" />
-        </div>
-      </div>
-      <div class="field">
-        <label for="intent">Business intent</label>
-        <textarea id="intent" placeholder="Example: Build a branch firewall with two WAN circuits, SD-WAN, corporate LAN, guest VLAN, outbound internet, and logging."></textarea>
-      </div>
-      <div class="field">
-        <label for="wan">WAN circuits</label>
-        <textarea id="wan" placeholder="One per line, example: wan1 Comcast DHCP 500/50, wan2 AT&T static 100/100"></textarea>
-      </div>
-      <div class="field">
-        <label for="lan">LAN networks / VLANs</label>
-        <textarea id="lan" placeholder="One per line, example: corp 10.20.10.0/24 vlan 10, guest 10.20.30.0/24 vlan 30"></textarea>
-      </div>
-      <div class="field">
-        <label for="policy">Firewall policy intent</label>
-        <textarea id="policy" placeholder="Example: Corp outbound web/DNS/NTP, guest internet only, block guest to corp."></textarea>
-      </div>
-      <div class="field row">
-        <div>
-          <label for="change-window">Change window</label>
-          <input id="change-window" placeholder="Sunday 02:00 local" />
-        </div>
-        <div>
-          <label for="rollback">Rollback expectation</label>
-          <input id="rollback" placeholder="Restore prior config backup" />
+        <div class="field">
+          <label for="intent">Business intent</label>
+          <textarea id="intent" placeholder="Example: Build a branch firewall with two WAN circuits, SD-WAN, corporate LAN, guest VLAN, outbound internet, and logging."></textarea>
         </div>
       </div>
-      <div class="field">
-        <label for="config-file">Existing FortiGate config upload</label>
-        <input id="config-file" type="file" accept=".conf,.cfg,.txt" />
-      </div>
-      <div class="field">
-        <label for="existing-config">Existing config text</label>
-        <textarea id="existing-config" placeholder="Paste a FortiGate config here or upload a file above."></textarea>
-      </div>
-      <div class="row">
-        <button id="run-design">Generate Draft Package</button>
+
+      <div class="step-panel" data-panel="2">
+        <h2>Step 2: Add WAN/LAN details</h2>
+        <div class="field">
+          <label for="wan">WAN circuits</label>
+          <textarea id="wan" placeholder="One per line, example: wan1 Comcast DHCP 500/50, wan2 AT&T static 100/100"></textarea>
+        </div>
+        <div class="field">
+          <label for="lan">LAN networks / VLANs</label>
+          <textarea id="lan" placeholder="One per line, example: corp 10.20.10.0/24 vlan 10, guest 10.20.30.0/24 vlan 30"></textarea>
+        </div>
+        <div class="field">
+          <label for="config-file">Existing FortiGate config upload</label>
+          <input id="config-file" type="file" accept=".conf,.cfg,.txt" />
+        </div>
+        <div class="field">
+          <label for="existing-config">Existing config text</label>
+          <textarea id="existing-config" placeholder="Paste a FortiGate config here or upload a file above."></textarea>
+        </div>
         <button id="parse-config" class="secondary">Parse Config Only</button>
       </div>
-      <div class="row" style="margin-top: 10px;">
-        <button id="search-standards" class="secondary">Search Standards</button>
-        <button id="load-latest" class="secondary">Load Latest Run</button>
+
+      <div class="step-panel" data-panel="3">
+        <h2>Step 3: Add policy/logging requirements</h2>
+        <div class="field">
+          <label for="policy">Firewall policy intent</label>
+          <textarea id="policy" placeholder="Example: Corp outbound web/DNS/NTP, guest internet only, block guest to corp."></textarea>
+        </div>
+        <div class="field row">
+          <div>
+            <label for="change-window">Change window</label>
+            <input id="change-window" placeholder="Sunday 02:00 local" />
+          </div>
+          <div>
+            <label for="rollback">Rollback expectation</label>
+            <input id="rollback" placeholder="Restore prior config backup" />
+          </div>
+        </div>
+        <button id="search-standards" class="secondary">Search Standards For This Intent</button>
       </div>
-      <div class="row" style="margin-top: 10px;">
+
+      <div class="step-panel" data-panel="4">
+        <h2>Step 4: Generate draft</h2>
+        <p class="muted">This creates an artifact-only FortiGate package, runs validation, retrieves standards, and sends it to the Qwen judge.</p>
+        <div class="row">
+          <button id="run-design">Generate Draft Package</button>
+          <button id="load-latest" class="secondary">Load Latest Run</button>
+        </div>
+      </div>
+
+      <div class="step-panel" data-panel="5">
+        <h2>Step 5: Answer judge questions</h2>
+        <p class="muted">After a draft is generated or loaded, answer the Qwen judge questions in the output panel on the right.</p>
+        <button class="secondary" data-scroll-review>Show Review Questions</button>
+      </div>
+
+      <div class="step-panel" data-panel="6">
+        <h2>Step 6: Re-judge</h2>
+        <p class="muted">Use the orange submit button in the review panel. The system interprets your answers, updates the config, validates again, and asks Qwen to judge the package again.</p>
+        <button class="secondary" data-scroll-review>Go To Re-Judge Form</button>
+      </div>
+
+      <div class="step-panel" data-panel="7">
+        <h2>Step 7: Download package</h2>
+        <p class="muted">After generation or review, export the package from the download panel on the right.</p>
+        <button class="secondary" data-scroll-downloads>Show Downloads</button>
+      </div>
+
+      <div class="wizard-actions">
+        <button id="prev-step" class="secondary">Back</button>
+        <button id="next-step">Next</button>
+      </div>
+      <div style="margin-top: 10px;">
         <button id="copy-markdown" class="secondary" disabled>Copy Markdown</button>
       </div>
       <div id="status" class="status">Ready.</div>
@@ -160,6 +223,35 @@
     document.getElementById("graph-link").href = `${apiBase}/fortigate/graph/mermaid`;
     let currentMarkdown = "";
     let currentRun = null;
+    let currentStep = 1;
+    const maxStep = 7;
+
+    function setStep(step) {
+      currentStep = Math.max(1, Math.min(maxStep, Number(step) || 1));
+      document.querySelectorAll(".step-button").forEach((button) => {
+        const itemStep = Number(button.dataset.step);
+        button.classList.toggle("active", itemStep === currentStep);
+        button.classList.toggle("done", itemStep < currentStep);
+      });
+      document.querySelectorAll(".step-panel").forEach((panel) => {
+        panel.classList.toggle("active", Number(panel.dataset.panel) === currentStep);
+      });
+      document.getElementById("prev-step").disabled = currentStep === 1;
+      document.getElementById("next-step").textContent = currentStep === maxStep ? "Done" : "Next";
+    }
+
+    document.getElementById("step-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-step]");
+      if (button) setStep(button.dataset.step);
+    });
+
+    document.getElementById("prev-step").addEventListener("click", () => setStep(currentStep - 1));
+    document.getElementById("next-step").addEventListener("click", () => setStep(currentStep + 1));
+
+    document.addEventListener("click", (event) => {
+      if (event.target.closest("[data-scroll-review]")) document.getElementById("human-review-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (event.target.closest("[data-scroll-downloads]")) document.getElementById("downloads-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
 
     function lines(id) {
       return document.getElementById(id).value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
@@ -190,11 +282,29 @@
       document.getElementById("judge-pill").className = `pill ${run.judge_report?.verdict === "pass" ? "ok" : run.judge_report?.verdict === "block" ? "bad" : "warn"}`;
       document.getElementById("validation-pill").className = `pill ${run.validation_report?.passed ? "ok" : "bad"}`;
       outputEl.innerHTML = `
+        ${runSummaryHtml(run)}
         ${reviewQuestionsHtml(run)}
+        ${downloadsHtml(run)}
         <div class="section"><h2>Draft CLI</h2><pre>${escapeHtml(run.config_artifacts?.cli_config || "")}</pre></div>
         <div class="section"><h2>Final Package Markdown</h2><pre>${escapeHtml(run.markdown || "")}</pre></div>
       `;
       rawEl.textContent = JSON.stringify(run, null, 2);
+      if ((run.review_questions || []).length) setStep(5);
+      else if (run.status === "approved_artifact" || run.judge_report?.verdict === "pass") setStep(7);
+    }
+
+    function runSummaryHtml(run) {
+      return `
+        <div class="section">
+          <h2>Package Status</h2>
+          <div class="summary-grid">
+            <div class="summary-box"><strong>Run ID</strong>${escapeHtml(run.run_id || "n/a")}</div>
+            <div class="summary-box"><strong>Status</strong>${escapeHtml(run.status || "n/a")}</div>
+            <div class="summary-box"><strong>Qwen Judge</strong>${escapeHtml(run.judge_report?.verdict || "n/a")}</div>
+            <div class="summary-box"><strong>Validation</strong>${run.validation_report?.passed ? "passed" : "needs review"}</div>
+          </div>
+        </div>
+      `;
     }
 
     function reviewQuestionsHtml(run) {
@@ -235,6 +345,71 @@
       `;
     }
 
+    function downloadsHtml(run) {
+      return `
+        <div class="section" id="downloads-panel">
+          <h2>Step 7: Download Package</h2>
+          <p class="muted">Download artifacts for review. These are draft artifacts only; no FortiGate device has been changed.</p>
+          <div class="download-grid">
+            <button class="secondary" data-download="markdown">Design Package .md</button>
+            <button class="secondary" data-download="config">FortiGate Config .conf</button>
+            <button class="secondary" data-download="json">Run JSON</button>
+            <button class="secondary" data-download="audit">Review Audit .md</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function slug(value) {
+      return String(value || "fortigate-package").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "fortigate-package";
+    }
+
+    function fileBase() {
+      return slug(`${currentRun?.intake?.site_name || "site"}-${currentRun?.run_id || "run"}`);
+    }
+
+    function downloadText(filename, text, type = "text/plain") {
+      const blob = new Blob([text], { type });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function auditMarkdown(run) {
+      const review = run.human_review || {};
+      return [
+        `# FortiGate Review Audit: ${run.intake?.site_name || run.run_id}`,
+        "",
+        `- Run ID: \`${run.run_id}\``,
+        `- Status: \`${run.status}\``,
+        `- Judge verdict: \`${run.judge_report?.verdict || "n/a"}\``,
+        `- Judge model: \`${run.judge_report?.model || "n/a"}\``,
+        "",
+        "## Human Review Answers",
+        "",
+        "```json",
+        JSON.stringify(review.answers || {}, null, 2),
+        "```",
+        "",
+        "## Interpreted Answers",
+        "",
+        "```json",
+        JSON.stringify(review.interpreted_answers || [], null, 2),
+        "```",
+        "",
+        "## Judge Report",
+        "",
+        "```json",
+        JSON.stringify(run.judge_report || {}, null, 2),
+        "```",
+      ].join("\n");
+    }
+
     document.addEventListener("click", async (event) => {
       if (event.target?.id !== "submit-review") return;
       if (!currentRun?.run_id) return;
@@ -270,6 +445,16 @@
       } finally {
         button.disabled = false;
       }
+    });
+
+    document.addEventListener("click", (event) => {
+      const action = event.target?.dataset?.download;
+      if (!action || !currentRun) return;
+      const base = fileBase();
+      if (action === "markdown") downloadText(`${base}-package.md`, currentRun.markdown || "");
+      if (action === "config") downloadText(`${base}.conf`, currentRun.config_artifacts?.cli_config || "");
+      if (action === "json") downloadText(`${base}.json`, JSON.stringify(currentRun, null, 2), "application/json");
+      if (action === "audit") downloadText(`${base}-audit.md`, auditMarkdown(currentRun));
     });
 
     function escapeHtml(value) {
@@ -369,6 +554,8 @@
       await navigator.clipboard.writeText(currentMarkdown);
       statusEl.textContent = "Markdown copied.";
     });
+
+    setStep(1);
   </script>
 </body>
 </html>
