@@ -54,6 +54,8 @@ services:
   research-frontend:
     build: ./frontend
     container_name: research-frontend
+    environment:
+      FRONTEND_PASSWORD: ${FRONTEND_PASSWORD:-fortidesignagent}
     ports:
       - "8080:8080"
     depends_on:
