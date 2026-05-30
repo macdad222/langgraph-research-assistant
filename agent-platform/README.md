@@ -109,7 +109,9 @@ The FortiGate agent is artifact-only. It can:
 - Retrieve standards evidence.
 - Build logical and FortiGate-specific designs.
 - Generate draft CLI artifacts.
+- Run an optional higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`.
 - Run deterministic validation and standards checks.
+- Optionally refactor the draft config with `FORTIGATE_CONFIG_REFINER_MODEL_NAME` before judge review.
 - Run a Qwen-configured model judge before human review.
 - Regenerate draft config artifacts when the judge finds more than three review items.
 - Generate human review questions from judge findings, accept reviewer answers, revise the config, and send it back through validation and Qwen judging.
@@ -117,6 +119,26 @@ The FortiGate agent is artifact-only. It can:
 - Save packages under `/data/fortigate-runs`.
 
 No live device changes are made.
+
+The default FortiGate config flow is Gemma-first with Qwen refinement before Qwen judge:
+
+```text
+generate_config_artifacts
+  -> validate_config
+  -> check_standards
+  -> risk_review
+  -> builder_review_config_artifacts
+  -> validate_config
+  -> check_standards
+  -> risk_review
+  -> refine_config_artifacts
+  -> validate_config
+  -> check_standards
+  -> risk_review
+  -> frontier_model_judge
+```
+
+Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=0.7` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model.
 
 ## Human In The Loop
 

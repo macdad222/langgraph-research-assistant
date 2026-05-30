@@ -35,6 +35,8 @@ class FortiGateState(TypedDict, total=False):
     validation_report: dict[str, Any]
     standards_report: dict[str, Any]
     risk_report: dict[str, Any]
+    config_builder_review: dict[str, Any]
+    config_refinement: dict[str, Any]
     judge_report: dict[str, Any]
     judge_iterations: int
     human_review_decision: str
@@ -277,7 +279,16 @@ def build_fortigate_graph(
     human_review_interrupt: bool = False,
     judge_model: ChatOpenAI | None = None,
     judge_model_name: str = "",
+    builder_review_model: ChatOpenAI | None = None,
+    builder_review_model_name: str = "",
+    builder_review_mode: str = "pre_refine",
+    config_refiner_model: ChatOpenAI | None = None,
+    config_refiner_model_name: str = "",
+    config_refinement_mode: str = "pre_judge",
 ):
+    normalized_builder_review_mode = builder_review_mode if builder_review_mode in {"off", "pre_refine"} else "pre_refine"
+    normalized_refinement_mode = config_refinement_mode if config_refinement_mode in {"off", "pre_judge"} else "pre_judge"
+
     async def intake_request(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         intake = FortiGateIntake(**state.get("intake", {})).model_dump()
@@ -369,8 +380,16 @@ def build_fortigate_graph(
             [
                 SystemMessage(
                     content=(
-                        "Return only JSON with key config_artifacts. Include cli_config, object_tables, rollback_plan, assumptions, "
-                        "standards_citations. The CLI must be a draft only and must not claim it was applied."
+                        "Return only JSON with key config_artifacts. Build a high-quality draft FortiGate configuration package. "
+                        "config_artifacts must include cli_config, object_tables, policy_table, rollback_plan, assumptions, "
+                        "standards_citations, and implementation_notes. Generate ordered FortiOS CLI sections that match the "
+                        "FortiGate design: system settings, interfaces/VLANs, zones, address and service objects, SD-WAN, routes, "
+                        "NAT/VIP, VPN, HA, logging, and firewall policies when applicable. Prefer named objects and zones over raw "
+                        "'all', use least-privilege policies, enable logging on allow policies, and make object names traceable to "
+                        "the site and design intent. For modify_existing requests, avoid destructive changes unless explicitly "
+                        "requested and include additive change blocks where possible. Do not invent secrets, public IPs, gateways, "
+                        "VPN PSKs, DNS servers, syslog servers, or SNMP communities; place unknown values in assumptions and use "
+                        "clear placeholders in the CLI. The CLI must be a draft only and must not claim it was applied."
                     )
                 ),
                 HumanMessage(content=json.dumps({"intake": state.get("intake", {}), "current_config_summary": state.get("current_config_summary", {}), "fortigate_design": state.get("fortigate_design", {}), "change_impact": state.get("change_impact", {}), "standards": _standards_payload(state.get("standards", []))}, indent=2)),
@@ -398,6 +417,130 @@ def build_fortigate_graph(
         report = review_risk(state).model_dump()
         return _trace_update(state, {"risk_report": report}, "risk_review", started_at, started_perf, f"Risk review produced {len(report.get('warnings', []))} warning(s).")
 
+    async def builder_review_config_artifacts(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        reviewer = builder_review_model or model
+        reviewer_name = builder_review_model_name or getattr(model, "model_name", "configured-model")
+        response = await reviewer.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with keys config_artifacts and config_builder_review. You are doing a thorough "
+                        "network configuration, firewall policy, and security refactor of the initial FortiGate draft. Look for "
+                        "missing objects, overbroad policies, missing logging, weak segmentation, incomplete SD-WAN/route behavior, "
+                        "unsafe assumptions, and mismatch with the design or standards. Improve the CLI and package where you can, "
+                        "but keep it artifact-only, preserve safety labels and rollback details, and do not invent secrets or site "
+                        "values. Explain material improvements, unresolved assumptions, and any security tradeoffs in "
+                        "config_builder_review."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": state.get("intake", {}),
+                            "current_config_summary": state.get("current_config_summary", {}),
+                            "logical_design": state.get("logical_design", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "change_impact": state.get("change_impact", {}),
+                            "config_artifacts": state.get("config_artifacts", {}),
+                            "validation_report": state.get("validation_report", {}),
+                            "standards_report": state.get("standards_report", {}),
+                            "risk_report": state.get("risk_report", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
+        review = data.get("config_builder_review") if isinstance(data.get("config_builder_review"), dict) else {}
+        if artifacts.get("cli_config"):
+            artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
+            artifacts["builder_reviewed_by_model"] = reviewer_name
+            review.setdefault("model", reviewer_name)
+            review.setdefault("mode", normalized_builder_review_mode)
+            return _trace_update(
+                state,
+                {"config_artifacts": artifacts, "config_builder_review": review},
+                "builder_review_config_artifacts",
+                started_at,
+                started_perf,
+                "Builder model thoroughly reviewed and refactored draft config artifacts.",
+                branch=reviewer_name,
+            )
+        return _trace_update(
+            state,
+            {"config_builder_review": {"model": reviewer_name, "mode": normalized_builder_review_mode, "status": "no_structured_review"}},
+            "builder_review_config_artifacts",
+            started_at,
+            started_perf,
+            "No structured builder review returned; kept prior artifacts.",
+            branch="no-op",
+        )
+
+    async def refine_config_artifacts(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        refiner = config_refiner_model or judge_model or model
+        refiner_name = config_refiner_model_name or judge_model_name or getattr(model, "model_name", "configured-model")
+        response = await refiner.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with keys config_artifacts and config_refinement. You are a senior FortiGate "
+                        "configuration refiner. Improve the draft CLI before independent judge review by addressing validation, "
+                        "standards, and risk findings. Preserve artifact-only language, rollback details, safety labels, standards "
+                        "citations, and the user's design intent. Do not claim the config was applied. If the draft is already "
+                        "appropriate, return it unchanged and explain that in config_refinement."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "intake": state.get("intake", {}),
+                            "current_config_summary": state.get("current_config_summary", {}),
+                            "logical_design": state.get("logical_design", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "change_impact": state.get("change_impact", {}),
+                            "config_artifacts": state.get("config_artifacts", {}),
+                            "validation_report": state.get("validation_report", {}),
+                            "standards_report": state.get("standards_report", {}),
+                            "risk_report": state.get("risk_report", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
+        refinement = data.get("config_refinement") if isinstance(data.get("config_refinement"), dict) else {}
+        if artifacts.get("cli_config"):
+            artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
+            artifacts["refined_by_model"] = refiner_name
+            refinement.setdefault("model", refiner_name)
+            refinement.setdefault("mode", normalized_refinement_mode)
+            return _trace_update(
+                state,
+                {"config_artifacts": artifacts, "config_refinement": refinement},
+                "refine_config_artifacts",
+                started_at,
+                started_perf,
+                "Refined draft config artifacts before judge review.",
+                branch=refiner_name,
+            )
+        return _trace_update(
+            state,
+            {"config_refinement": {"model": refiner_name, "mode": normalized_refinement_mode, "status": "no_structured_refinement"}},
+            "refine_config_artifacts",
+            started_at,
+            started_perf,
+            "No structured refinement returned; kept prior artifacts.",
+            branch="no-op",
+        )
+
     async def frontier_model_judge(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         packet = {
@@ -410,10 +553,19 @@ def build_fortigate_graph(
             "validation_report": state.get("validation_report", {}),
             "standards_report": state.get("standards_report", {}),
             "risk_report": state.get("risk_report", {}),
+            "config_builder_review": state.get("config_builder_review", {}),
+            "config_refinement": state.get("config_refinement", {}),
             "standards": _standards_payload(state.get("standards", [])),
         }
         report = await run_frontier_judge(judge_model or model, packet, judge_model_name=judge_model_name or getattr(model, "model_name", "configured-model"))
         return _trace_update(state, {"judge_report": report.model_dump(), "judge_iterations": int(state.get("judge_iterations", 0) or 0) + 1}, "frontier_model_judge", started_at, started_perf, f"Judge verdict: {report.verdict}.", branch=report.verdict)
+
+    def route_after_risk_review(state: FortiGateState) -> str:
+        if normalized_builder_review_mode == "pre_refine" and not state.get("config_builder_review"):
+            return "builder_review"
+        if normalized_refinement_mode == "pre_judge" and not state.get("config_refinement"):
+            return "refine"
+        return "judge"
 
     async def revise_after_judge(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
@@ -541,6 +693,8 @@ def build_fortigate_graph(
     graph.add_node("validate_config", validate_config)
     graph.add_node("check_standards", check_standards)
     graph.add_node("risk_review", risk_review)
+    graph.add_node("builder_review_config_artifacts", builder_review_config_artifacts)
+    graph.add_node("refine_config_artifacts", refine_config_artifacts)
     graph.add_node("frontier_model_judge", frontier_model_judge)
     graph.add_node("revise_after_judge", revise_after_judge)
     graph.add_node("regenerate_config_after_judge", regenerate_config_after_judge)
@@ -563,7 +717,13 @@ def build_fortigate_graph(
     graph.add_edge("generate_config_artifacts", "validate_config")
     graph.add_edge("validate_config", "check_standards")
     graph.add_edge("check_standards", "risk_review")
-    graph.add_edge("risk_review", "frontier_model_judge")
+    graph.add_conditional_edges(
+        "risk_review",
+        route_after_risk_review,
+        {"builder_review": "builder_review_config_artifacts", "refine": "refine_config_artifacts", "judge": "frontier_model_judge"},
+    )
+    graph.add_edge("builder_review_config_artifacts", "validate_config")
+    graph.add_edge("refine_config_artifacts", "validate_config")
     judge_routes = {"revise": "revise_after_judge", "regenerate": "regenerate_config_after_judge", "finalize": "finalize_package"}
     if human_review_interrupt:
         judge_routes["human_review"] = "human_review_checkpoint"

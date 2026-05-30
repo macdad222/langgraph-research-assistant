@@ -146,6 +146,11 @@ LITELLM_BASE_URL=http://agent-host.example:4010/v1
 LITELLM_API_KEY=<LiteLLM key>
 MODEL_NAME=gemma-local
 FORTIGATE_JUDGE_MODEL_NAME=Qwen3.6-27B
+FORTIGATE_BUILDER_REVIEW_MODE=pre_refine
+FORTIGATE_BUILDER_REVIEW_MODEL_NAME=gemma-local
+FORTIGATE_BUILDER_REVIEW_TEMPERATURE=0.7
+FORTIGATE_CONFIG_REFINEMENT_MODE=pre_judge
+FORTIGATE_CONFIG_REFINER_MODEL_NAME=Qwen3.6-27B
 LANGFUSE_PUBLIC_KEY=<Langfuse public key>
 LANGFUSE_SECRET_KEY=<Langfuse secret key>
 LANGFUSE_BASE_URL=http://agent-host.example:3001
@@ -364,7 +369,7 @@ Open:
 http://localhost:8080/fortigate
 ```
 
-The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. When the judge finds more than three review items, the graph regenerates the config artifacts from scratch instead of applying a small revision. Saved FortiGate runs expose human review questions derived from the judge report; reviewer answers are interpreted by the generation model into config instructions, accepted-risk notes, or requests for more detail. The config artifacts are updated, validation/standards/risk checks run again, and the full package goes back to Qwen. The package is marked final only when the judge returns `pass`.
+The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. By default, the graph runs a higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME` after initial validation, standards, and risk checks, then re-runs those local checks. It also runs a pre-judge config refiner with `FORTIGATE_CONFIG_REFINER_MODEL_NAME`, then re-runs local checks before the judge. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` or `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip either pass, and tune `FORTIGATE_BUILDER_REVIEW_TEMPERATURE` to change how aggressively the builder review explores network, firewall policy, and security improvements. When the judge finds more than three review items, the graph regenerates the config artifacts from scratch instead of applying a small revision. Saved FortiGate runs expose human review questions derived from the judge report; reviewer answers are interpreted by the generation model into config instructions, accepted-risk notes, or requests for more detail. The config artifacts are updated, validation/standards/risk checks run again, and the full package goes back to Qwen. The package is marked final only when the judge returns `pass`.
 
 ## Standards Library
 

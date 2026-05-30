@@ -1087,6 +1087,16 @@ def get_required_env(name: str) -> str:
     return value
 
 
+def get_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 def langfuse_enabled() -> bool:
     return all(os.getenv(name) for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"))
 
@@ -1109,6 +1119,11 @@ async def lifespan(app: FastAPI):
         await checkpointer.asetup()
         app.state.model_name = model_name
         app.state.fortigate_judge_model_name = os.getenv("FORTIGATE_JUDGE_MODEL_NAME", model_name)
+        app.state.fortigate_builder_review_mode = os.getenv("FORTIGATE_BUILDER_REVIEW_MODE", "pre_refine")
+        app.state.fortigate_builder_review_model_name = os.getenv("FORTIGATE_BUILDER_REVIEW_MODEL_NAME", model_name)
+        app.state.fortigate_builder_review_temperature = get_float_env("FORTIGATE_BUILDER_REVIEW_TEMPERATURE", 0.7)
+        app.state.fortigate_config_refinement_mode = os.getenv("FORTIGATE_CONFIG_REFINEMENT_MODE", "pre_judge")
+        app.state.fortigate_config_refiner_model_name = os.getenv("FORTIGATE_CONFIG_REFINER_MODEL_NAME", app.state.fortigate_judge_model_name)
         app.state.langfuse = None
         app.state.langfuse_handler = None
         app.state.research_memory = Neo4jResearchMemory.from_env()
@@ -1144,11 +1159,34 @@ async def lifespan(app: FastAPI):
             extra_body={"metadata": {"agentic_gateway_openclaw_passthrough": True}},
         )
         app.state.fortigate_judge_model = judge_model
+        builder_review_model = ChatOpenAI(
+            model=app.state.fortigate_builder_review_model_name,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=app.state.fortigate_builder_review_temperature,
+        )
+        app.state.fortigate_builder_review_model = builder_review_model
+        refiner_model = judge_model
+        if app.state.fortigate_config_refiner_model_name != app.state.fortigate_judge_model_name:
+            refiner_model = ChatOpenAI(
+                model=app.state.fortigate_config_refiner_model_name,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=0,
+                extra_body={"metadata": {"agentic_gateway_openclaw_passthrough": True}},
+            )
+        app.state.fortigate_config_refiner_model = refiner_model
         app.state.fortigate_graph = build_fortigate_graph(
             llm,
             checkpointer,
             judge_model=judge_model,
             judge_model_name=app.state.fortigate_judge_model_name,
+            builder_review_model=builder_review_model,
+            builder_review_model_name=app.state.fortigate_builder_review_model_name,
+            builder_review_mode=app.state.fortigate_builder_review_mode,
+            config_refiner_model=refiner_model,
+            config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
+            config_refinement_mode=app.state.fortigate_config_refinement_mode,
         )
         app.state.interactive_fortigate_graph = build_fortigate_graph(
             llm,
@@ -1157,6 +1195,12 @@ async def lifespan(app: FastAPI):
             human_review_interrupt=True,
             judge_model=judge_model,
             judge_model_name=app.state.fortigate_judge_model_name,
+            builder_review_model=builder_review_model,
+            builder_review_model_name=app.state.fortigate_builder_review_model_name,
+            builder_review_mode=app.state.fortigate_builder_review_mode,
+            config_refiner_model=refiner_model,
+            config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
+            config_refinement_mode=app.state.fortigate_config_refinement_mode,
         )
         app.state.network_design_graph = build_network_design_graph(llm, checkpointer)
         try:

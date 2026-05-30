@@ -380,6 +380,28 @@
       URL.revokeObjectURL(url);
     }
 
+    function runNeedsFinalReview(run = currentRun) {
+      return !!run && run.judge_report?.verdict !== "pass";
+    }
+
+    function draftConfigWarning(run = currentRun) {
+      const verdict = run?.judge_report?.verdict || "not reviewed";
+      const runId = run?.run_id || "unknown";
+      return [
+        "# WARNING: DRAFT FORTIGATE CONFIGURATION - NOT APPROVED FOR DEPLOYMENT",
+        `# FortiGate run: ${runId}`,
+        `# Qwen judge verdict: ${verdict}`,
+        "# This file still needs final human review and all judge-requested revisions must be fixed before use.",
+        "# No device changes have been made by this system.",
+        "",
+      ].join("\n");
+    }
+
+    function configDownloadText(run = currentRun) {
+      const cli = run?.config_artifacts?.cli_config || "";
+      return runNeedsFinalReview(run) ? `${draftConfigWarning(run)}${cli}` : cli;
+    }
+
     function auditMarkdown(run) {
       const review = run.human_review || {};
       return [
@@ -452,7 +474,7 @@
       if (!action || !currentRun) return;
       const base = fileBase();
       if (action === "markdown") downloadText(`${base}-package.md`, currentRun.markdown || "");
-      if (action === "config") downloadText(`${base}.conf`, currentRun.config_artifacts?.cli_config || "");
+      if (action === "config") downloadText(`${base}.conf`, configDownloadText(currentRun));
       if (action === "json") downloadText(`${base}.json`, JSON.stringify(currentRun, null, 2), "application/json");
       if (action === "audit") downloadText(`${base}-audit.md`, auditMarkdown(currentRun));
     });

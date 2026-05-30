@@ -251,6 +251,29 @@
     }
     .pill.ok { color: var(--ok); border-color: rgba(134, 239, 172, .35); }
     .pill.bad { color: var(--danger); border-color: rgba(248, 113, 113, .38); }
+    .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, .38); }
+    .review-card {
+      border-color: rgba(251, 191, 36, .42);
+      background: rgba(67, 20, 7, .34);
+    }
+    .review-card h3 { color: #fed7aa; }
+    .question-card {
+      border: 1px solid rgba(251, 191, 36, .28);
+      border-radius: 14px;
+      padding: 12px;
+      margin: 12px 0;
+      background: rgba(15, 23, 42, .72);
+    }
+    .warning-block {
+      border: 1px solid rgba(251, 191, 36, .38);
+      border-radius: 12px;
+      padding: 10px;
+      color: #fde68a;
+      background: rgba(113, 63, 18, .28);
+      font-size: 13px;
+      line-height: 1.4;
+      margin-bottom: 12px;
+    }
     pre {
       overflow: auto;
       max-height: 360px;
@@ -411,6 +434,8 @@
         <pre id="results"></pre>
       </div>
 
+      <div id="fortigate-review-card" class="card review-card hidden"></div>
+
       <details class="card">
         <summary>Raw Response</summary>
         <pre id="raw">{}</pre>
@@ -431,6 +456,7 @@
     const rawEl = document.getElementById("raw");
     const resultsEl = document.getElementById("results");
     const resultsCard = document.getElementById("results-card");
+    const fortigateReviewCard = document.getElementById("fortigate-review-card");
     const copyMarkdown = document.getElementById("copy-markdown");
     const copyHandoff = document.getElementById("copy-handoff");
     const generateConfigButton = document.getElementById("generate-config");
@@ -486,6 +512,28 @@
 
     function fortigateCli() {
       return currentFortiGateRun?.config_artifacts?.cli_config || "";
+    }
+
+    function fortigateNeedsFinalReview(run = currentFortiGateRun) {
+      return !!run && run.judge_report?.verdict !== "pass";
+    }
+
+    function draftConfigWarning(run = currentFortiGateRun) {
+      const verdict = run?.judge_report?.verdict || "not reviewed";
+      const runId = run?.run_id || "unknown";
+      return [
+        "# WARNING: DRAFT FORTIGATE CONFIGURATION - NOT APPROVED FOR DEPLOYMENT",
+        `# FortiGate run: ${runId}`,
+        `# Qwen judge verdict: ${verdict}`,
+        "# This file still needs final human review and all judge-requested revisions must be fixed before use.",
+        "# No device changes have been made by this system.",
+        "",
+      ].join("\n");
+    }
+
+    function fortigateConfigDownloadText() {
+      const cli = fortigateCli();
+      return fortigateNeedsFinalReview() ? `${draftConfigWarning()}${cli}` : cli;
     }
 
     function bulletList(items) {
@@ -725,6 +773,50 @@
       return lines.join("\n");
     }
 
+    function renderFortiGateReview(run) {
+      const questions = run?.review_questions || [];
+      if (!run) {
+        fortigateReviewCard.classList.add("hidden");
+        fortigateReviewCard.innerHTML = "";
+        return;
+      }
+      if (!questions.length && !fortigateNeedsFinalReview(run)) {
+        fortigateReviewCard.classList.add("hidden");
+        fortigateReviewCard.innerHTML = "";
+        return;
+      }
+      fortigateReviewCard.classList.remove("hidden");
+      if (!questions.length) {
+        fortigateReviewCard.innerHTML = `
+          <h3>FortiGate Review</h3>
+          <div class="warning-block">Qwen did not pass this draft, but no structured review questions were returned. Download is allowed with a warning header; inspect the raw judge report before any use.</div>
+        `;
+        return;
+      }
+      fortigateReviewCard.innerHTML = `
+        <h3>FortiGate Review Required</h3>
+        <div class="warning-block">
+          Qwen returned <strong>${escapeHtml(run.judge_report?.verdict || "needs review")}</strong>.
+          You can still download the draft config, but it will include a warning header until Qwen passes.
+        </div>
+        <div class="pills"><span class="pill warn">${questions.length} question(s)</span></div>
+        <p class="status">Answer the judge questions. Submitting will update the draft config, re-run validation, and send it back through Qwen.</p>
+        <div class="field">
+          <label for="fortigate-review-notes">Reviewer notes</label>
+          <textarea id="fortigate-review-notes" placeholder="Overall notes, approvals, or correction direction"></textarea>
+        </div>
+        ${questions.map((question) => `
+          <div class="field question-card">
+            <label for="fortigate-answer-${escapeHtml(question.question_id)}">${escapeHtml(question.question_id)} - ${escapeHtml(question.source || "judge")}</label>
+            <div class="status">${escapeHtml(question.question || "")}</div>
+            ${question.context ? `<div class="status">Context: ${escapeHtml(question.context)}</div>` : ""}
+            <textarea id="fortigate-answer-${escapeHtml(question.question_id)}" data-fortigate-question-id="${escapeHtml(question.question_id)}" placeholder="Answer or correction for this item"></textarea>
+          </div>
+        `).join("")}
+        <button id="submit-fortigate-review">Submit Answers And Re-Judge</button>
+      `;
+    }
+
     function ensureGoalFromMessage(content) {
       const goal = document.getElementById("goal");
       if (!goal.value.trim()) {
@@ -802,6 +894,7 @@
       downloadJsonButton.disabled = !currentRun;
       downloadAuditButton.disabled = !currentRun;
       downloadConfigButton.disabled = true;
+      renderFortiGateReview(null);
       designReadyEl.textContent = "ready";
       configReadyEl.textContent = "not generated";
       downloadsReadyEl.textContent = "design/audit/json";
@@ -832,7 +925,7 @@
       currentFortiGateRun = run;
       downloadConfigButton.disabled = !fortigateCli();
       downloadAuditButton.disabled = !currentRun;
-      configReadyEl.textContent = fortigateCli() ? "ready" : "needs review";
+      configReadyEl.textContent = fortigateNeedsFinalReview(run) ? "needs review" : "ready";
       downloadsReadyEl.textContent = "all files";
       resultsCard.classList.remove("hidden");
       resultsEl.textContent = JSON.stringify({
@@ -840,14 +933,19 @@
         status: run.status,
         judge_verdict: run.judge_report?.verdict,
         validation_passed: run.validation_report?.passed,
+        review_questions: (run.review_questions || []).length,
+        config_download_warning: fortigateNeedsFinalReview(run) ? "Downloaded .conf includes draft/final-review warning header." : "Judge passed; no warning header is added.",
         compliance_matrix: complianceMatrixWithConfigEvidence(),
         config_file: `${fileBase()}-fortigate.conf`,
         audit_file: `${fileBase()}-audit.md`
       }, null, 2);
       rawEl.textContent = JSON.stringify({ network_design_run: currentRun, fortigate_run: run }, null, 2);
       const judgeStatus = run.judge_report?.verdict ? ` Judge verdict: ${run.judge_report.verdict}.` : "";
-      exportStatusEl.textContent = `FortiGate config ready. You can download the .conf and detailed audit file.${judgeStatus}`;
+      exportStatusEl.textContent = fortigateNeedsFinalReview(run)
+        ? `FortiGate draft config needs review. You can download the .conf with a warning header, or answer Qwen's questions below and re-judge.${judgeStatus}`
+        : `FortiGate config ready. You can download the .conf and detailed audit file.${judgeStatus}`;
       statusEl.textContent = `FortiGate configuration generated: ${run.run_id}`;
+      renderFortiGateReview(run);
     }
 
     document.getElementById("send-message").addEventListener("click", () => sendMessage());
@@ -991,7 +1089,7 @@
           body: JSON.stringify({
             intake: currentHandoff,
             existing_config: "",
-            thread_id: `${currentRun?.thread_id || "network-design"}-fortigate-export`,
+            thread_id: `${currentRun?.thread_id || "network-design"}-${Date.now()}-fortigate-export`,
             mode: "artifact"
           })
         });
@@ -1018,7 +1116,53 @@
     });
 
     downloadConfigButton.addEventListener("click", () => {
-      downloadText(`${fileBase()}-fortigate.conf`, fortigateCli() || "", "text/plain");
+      downloadText(`${fileBase()}-fortigate.conf`, fortigateConfigDownloadText(), "text/plain");
+    });
+
+    document.addEventListener("click", async (event) => {
+      if (event.target?.id !== "submit-fortigate-review") return;
+      if (!currentFortiGateRun?.run_id) {
+        exportStatusEl.textContent = "No FortiGate run is loaded for review.";
+        return;
+      }
+      const answers = {};
+      document.querySelectorAll("[data-fortigate-question-id]").forEach((input) => {
+        if (input.value.trim()) answers[input.dataset.fortigateQuestionId] = input.value.trim();
+      });
+      if (!Object.keys(answers).length) {
+        exportStatusEl.textContent = "Answer at least one Qwen review question before submitting.";
+        return;
+      }
+      const button = event.target;
+      button.disabled = true;
+      button.textContent = "Submitting...";
+      exportStatusEl.textContent = "Applying human review, updating config, and sending back through Qwen...";
+      try {
+        const response = await fetch(`${apiBase}/fortigate/runs/${currentFortiGateRun.run_id}/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            decision: "needs_work",
+            reviewer_notes: document.getElementById("fortigate-review-notes")?.value || "",
+            selected_issues: (currentFortiGateRun.review_questions || []).map((question) => question.context || question.question).filter(Boolean),
+            answers
+          })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          exportStatusEl.textContent = `Review error: ${data.detail || response.statusText}`;
+          rawEl.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        renderFortiGateRun(data);
+        exportStatusEl.textContent = `Review applied. Qwen verdict: ${data.judge_report?.verdict || "n/a"}.`;
+      } catch (error) {
+        exportStatusEl.textContent = `Browser error while submitting review: ${error.message}`;
+        rawEl.textContent = String(error.stack || error);
+      } finally {
+        button.disabled = false;
+        button.textContent = "Submit Answers And Re-Judge";
+      }
     });
 
     downloadAuditButton.addEventListener("click", () => {
