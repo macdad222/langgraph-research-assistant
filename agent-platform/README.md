@@ -1,6 +1,6 @@
 # Agent Platform
 
-Local AI agent platform running on a Linux agent host with LangGraph, LiteLLM, Redis, Langfuse, Neo4j, a web Research Assistant, a Network Design Helper, and an artifact-only FortiGate provisioning agent.
+Local AI agent platform running on a Linux agent host with LangGraph, LiteLLM, Redis, Langfuse, Neo4j, a password-protected web frontend, a Network Design Helper, and an artifact-only FortiGate provisioning agent.
 
 For the full architecture and operations guide, see [`PLATFORM_REFERENCE.md`](PLATFORM_REFERENCE.md).
 
@@ -9,14 +9,45 @@ For the full architecture and operations guide, see [`PLATFORM_REFERENCE.md`](PL
 | Service | URL | Purpose |
 | --- | --- | --- |
 | Admin Portal | `http://agent-host.example` | Landing page for service UIs |
-| Research Assistant | `http://agent-host.example:8080` | Main web UI |
-| Network Design Helper | `http://agent-host.example:8080/network-design` | Chat-first design assistant with standards, handoff, compliance matrix, and exports |
+| Network Design Helper | `http://agent-host.example:8080/network-design` | Default protected UI for chat-first design, standards, handoff, compliance matrix, and exports |
 | FortiGate Agent | `http://agent-host.example:8080/fortigate` | Draft FortiGate design/config package generation |
-| Agent API | `http://agent-host.example:8001` | FastAPI + LangGraph |
+| Research Assistant | `http://agent-host.example:8080/research` | Research UI, still available but not linked from the FortiGate design frontend |
+| Frontend API Proxy | `http://agent-host.example:8080/api/*` | Same-origin proxy from the frontend to the internal FastAPI service |
+| Agent API | `http://agent-host.example:8001` | Internal FastAPI + LangGraph service; do not expose directly when publishing through Cloudflare |
 | Neo4j Browser | `http://agent-host.example:7474` | Research memory graph |
 | Langfuse | `http://agent-host.example:3001` | Traces and observability |
 | LiteLLM | `http://agent-host.example:4010/v1` | Model gateway |
 | vLLM | `http://vllm-host.example:8000/v1` | Dedicated inference server |
+
+## End-To-End Request Path
+
+The public web path should expose only the frontend service:
+
+```text
+Browser
+  -> Cloudflare Tunnel / LAN reverse proxy
+  -> research-frontend on :8080
+  -> password gate
+  -> static UI pages
+  -> same-origin /api proxy
+  -> internal FastAPI + LangGraph app on :8001
+  -> Redis checkpoints, Neo4j memory, standards index, Langfuse traces
+  -> LiteLLM on :4010/v1
+  -> vLLM model server
+```
+
+The browser never needs to call `:8001` directly. `network-design.html`, `fortigate.html`, and `index.html` default to `apiBase = "/api"`, and `frontend/server.js` proxies `/api/*` to `API_PROXY_TARGET`.
+
+## Frontend Access
+
+The frontend has a simple shared password gate.
+
+```env
+FRONTEND_PASSWORD=fortidesignagent
+API_PROXY_TARGET=http://agent-host.example:8001
+```
+
+The default landing page is the Network Design Helper. The Research Assistant remains available at `/research`, but links to it are intentionally removed from the FortiGate design UI.
 
 ## Run
 
@@ -29,8 +60,9 @@ Check status:
 
 ```bash
 docker compose ps
+curl http://localhost:8080/health
+curl -H 'Cookie: fortigate_frontend_auth=1' http://localhost:8080/api/health
 curl http://localhost:8001/health
-curl http://localhost:8001/memory/health
 ```
 
 ## Linux Host Networking
@@ -38,6 +70,8 @@ curl http://localhost:8001/memory/health
 The Linux template runs `langgraph-app` with `network_mode: host`.
 
 That is intentional: it lets LiteLLM see LangGraph requests from the real agent host/LAN source address instead of a Docker bridge IP. Because of this, the app uses host-local service URLs such as `redis://127.0.0.1:6379/0` and `bolt://127.0.0.1:7687`.
+
+The frontend container stays on normal Docker networking and reaches the backend through `API_PROXY_TARGET`. For the current LAN deployment this is usually `http://agent.lab.internal:8001`.
 
 ## What The Research Assistant Does
 
@@ -124,14 +158,36 @@ No live device changes are made.
 The default FortiGate config flow is Gemma-first with Qwen refinement before Qwen judge:
 
 ```text
-generate_config_artifacts or sectional section builders
+intake_request
+  -> parse_existing_config
+  -> retrieve_standards
+  -> identify_missing_inputs
+  -> optional human_clarification_checkpoint
+  -> build_logical_design
+  -> build_fortigate_design
+  -> build_implementation_intent
+  -> check_intent_contract
+  -> optional repair_implementation_intent
+  -> analyze_change_impact
+  -> generate_config_artifacts
+     or build_interfaces_dhcp_section
+        -> build_fortiswitch_section
+        -> build_wifi_section
+        -> build_sdwan_routing_section
+        -> build_objects_services_section
+        -> build_firewall_policies_section
+        -> validate_config_sections
+        -> assemble_sectional_config_artifacts
   -> validate_config
   -> check_standards
   -> risk_review
+  -> check_cli_contract
+  -> optional autonomous_repair_config_artifacts
   -> builder_review_config_artifacts
   -> validate_config
   -> check_standards
   -> risk_review
+  -> check_cli_contract
   -> refine_config_artifacts
   -> validate_config
   -> check_standards
@@ -140,6 +196,9 @@ generate_config_artifacts or sectional section builders
   -> optional autonomous_repair_config_artifacts
   -> frontier_model_judge
   -> optional autonomous_repair_config_artifacts
+  -> optional revise_after_judge or regenerate_config_after_judge
+  -> optional human_review_checkpoint
+  -> finalize_package
 ```
 
 The graph now builds an `implementation_intent` contract before CLI generation. That contract covers VLANs, DHCP decisions, SD-WAN behavior, FortiSwitch, WiFi, object inventory, and the firewall policy matrix. Deterministic completeness gates check both the intent and generated CLI before Qwen judge review.
@@ -254,6 +313,14 @@ GET  /fortigate/runs
 GET  /fortigate/runs/{run_id}
 ```
 
+When using the frontend, these are called through `/api`, for example:
+
+```text
+POST /api/network-design/message
+POST /api/fortigate/design
+GET  /api/health
+```
+
 Memory:
 
 ```text
@@ -321,6 +388,8 @@ Ingestion writes the JSON fallback index and also attempts to build a Redis Sear
 ## Operational Notes
 
 - The Linux template uses host networking for LangGraph so LiteLLM can log the real agent host/LAN source address.
+- Publish only the frontend through Cloudflare or another public proxy. Keep `:8001`, Redis, Neo4j, LiteLLM, and Langfuse internal unless explicitly secured.
+- If the public UI loads but chat/design actions do not respond, check that the frontend is using `/api` and that `API_PROXY_TARGET` points to the reachable internal FastAPI URL.
 - Neo4j writes are best-effort; research runs still save to JSON if Neo4j is temporarily unavailable.
 - OPA is not wired yet. Current policy checks are Python checks inside the research graph.
 - Do not commit or paste active API keys from `.env`.

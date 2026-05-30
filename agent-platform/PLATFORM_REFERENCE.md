@@ -1,6 +1,6 @@
 # AI Agent Platform Reference
 
-Last updated: 2026-05-27
+Last updated: 2026-05-30
 
 This document captures the current Linux-oriented agent platform deployment using sanitized example hostnames.
 
@@ -12,7 +12,8 @@ The platform is a local agent stack for structured research and experimentation 
 - LiteLLM model access to a dedicated vLLM server.
 - Redis-backed LangGraph checkpoints.
 - Langfuse tracing.
-- A web-based Research Assistant frontend.
+- A password-protected web frontend with a same-origin `/api` proxy to the internal LangGraph API.
+- A web-based Research Assistant frontend, available at `/research`.
 - A web-based Network Design Helper for chat-first design conversations, standards retrieval, compliance matrix generation, and FortiGate handoff payloads.
 - An artifact-only FortiGate provisioning agent for draft designs, validation, model judge review, and CLI configuration artifacts.
 - Redis-first hybrid standards retrieval for Markdown/text/config files, HTML, PDFs, Word docs, PowerPoint decks, and spreadsheets.
@@ -28,17 +29,17 @@ The platform is a local agent stack for structured research and experimentation 
 ## High-Level Architecture
 
 ```text
-Browser / API Client
+Browser / Cloudflare Tunnel / API Client
   |
-  | http://agent-host.example
+  | public HTTPS or http://agent-host.example:8080
   v
-Admin Portal
+Password-Protected Frontend
   |
-  | http://agent-host.example:8080
+  | static pages: /network-design, /fortigate, /research
   v
 Research / Network Design / FortiGate Frontends
   |
-  | http://agent-host.example:8001
+  | same-origin /api proxy, internal target API_PROXY_TARGET
   v
 FastAPI + LangGraph App
   |-- Redis checkpoints
@@ -63,10 +64,11 @@ vLLM Inference Server on vllm-host.example:8000
 | Service | URL | Notes |
 | --- | --- | --- |
 | Admin portal | `http://agent-host.example` | Landing page for service links |
-| Research Assistant UI | `http://agent-host.example:8080` | Main end-user frontend |
-| Network Design Helper UI | `http://agent-host.example:8080/network-design` | Standards-aware network design chat, package generation, exports |
+| Network Design Helper UI | `http://agent-host.example:8080/network-design` | Default password-protected frontend |
 | FortiGate Agent UI | `http://agent-host.example:8080/fortigate` | Artifact-only FortiGate provisioning/change planning |
-| Agent API health | `http://agent-host.example:8001/health` | FastAPI health check |
+| Research Assistant UI | `http://agent-host.example:8080/research` | Research UI, not linked from the FortiGate design frontend |
+| Frontend API proxy | `http://agent-host.example:8080/api/*` | Same-origin proxy to internal FastAPI |
+| Agent API health | `http://agent-host.example:8001/health` | Internal FastAPI health check |
 | Agent API docs | `http://agent-host.example:8001/docs` | FastAPI Swagger docs |
 | Chat graph visualizer | `http://agent-host.example:8001/graph` | Browser-rendered Mermaid graph |
 | Research graph visualizer | `http://agent-host.example:8001/research/graph` | Rendered graph viewer with zoom/export |
@@ -88,7 +90,7 @@ vLLM Inference Server on vllm-host.example:8000
 | Path | Purpose |
 | --- | --- |
 | `~/dev/agent-platform` | LangGraph app, Dockerfile, Compose file, docs, frontend |
-| `~/dev/agent-platform/frontend` | Static research frontend container |
+| `~/dev/agent-platform/frontend` | Password-protected frontend and `/api` proxy |
 | `~/dev/agent-platform/data/research-runs` | JSON archive of saved research runs |
 | `~/dev/agent-platform/data/network-design-runs` | JSON archive of saved Network Design Helper runs |
 | `~/dev/agent-platform/data/fortigate-runs` | JSON archive of saved FortiGate package runs |
@@ -109,7 +111,7 @@ Core agent stack in `~/dev/agent-platform`:
 | `langgraph-app` | FastAPI + LangGraph agent service | `8001` |
 | `langgraph-redis` | Redis Stack for LangGraph checkpoints | `6379` |
 | `research-neo4j` | Neo4j research memory graph | `7474`, `7687` |
-| `research-frontend` | Static web UI for the Research Assistant | `8080` |
+| `research-frontend` | Password-protected frontend and same-origin `/api` proxy | `8080` |
 
 Admin portal stack in `~/dev/admin-portal`:
 
@@ -144,6 +146,8 @@ Important variables:
 ```text
 LITELLM_BASE_URL=http://agent-host.example:4010/v1
 LITELLM_API_KEY=<LiteLLM key>
+FRONTEND_PASSWORD=fortidesignagent
+API_PROXY_TARGET=http://agent-host.example:8001
 MODEL_NAME=gemma-local
 FORTIGATE_JUDGE_MODEL_NAME=Qwen3.6-27B
 FORTIGATE_BUILDER_REVIEW_MODE=pre_refine
@@ -196,6 +200,31 @@ Password: change-me-neo4j-password
 
 Do not paste the LiteLLM master key, generated UI passwords, Langfuse keys, Tavily key, or Neo4j password into docs or logs.
 
+### Frontend Password Gate
+
+The web frontend uses a simple shared password gate implemented in `frontend/server.js`.
+
+```text
+Default password: fortidesignagent
+Cookie: fortigate_frontend_auth=1
+```
+
+Set `FRONTEND_PASSWORD` in `.env` to change the password. This is a lightweight access gate for the design UI, not a replacement for Cloudflare Access, SSO, or per-user authorization.
+
+### Public / Cloudflare Access Pattern
+
+When publishing the UI through Cloudflare Tunnel or another reverse proxy, expose only the frontend service on `:8080`.
+
+```text
+Public browser
+  -> Cloudflare hostname
+  -> research-frontend:8080
+  -> /api proxy inside frontend server
+  -> API_PROXY_TARGET, usually http://agent.lab.internal:8001
+```
+
+Do not require browsers to access `:8001` directly. The UI files set `apiBase` to `/api`, which keeps backend API calls same-origin and avoids public backend exposure and CORS failures.
+
 ## Model Routing
 
 The LangGraph app calls LiteLLM using:
@@ -225,6 +254,7 @@ Support services remain containerized:
 - Redis remains published on `6379`.
 - Neo4j remains published on `7474` and `7687`.
 - Langfuse uses its own Compose network and published web port `3001`.
+- The frontend does not use host networking; it reaches FastAPI through `API_PROXY_TARGET`.
 
 ## LangGraph Workflows
 
@@ -355,6 +385,15 @@ intake_conversation
   -> finalize_package
 ```
 
+Browser/API shape:
+
+```text
+Browser /network-design
+  -> POST /api/network-design/message
+  -> POST /api/network-design/chat
+  -> optional POST /api/fortigate/design from generated handoff
+```
+
 Exports:
 
 - Design package Markdown.
@@ -371,7 +410,51 @@ Open:
 http://localhost:8080/fortigate
 ```
 
-The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. By default, the graph builds a structured implementation intent contract before CLI generation, covering VLANs, DHCP decisions, SD-WAN behavior, FortiSwitch, WiFi, object inventory, and the firewall policy matrix. Deterministic completeness gates inspect both intent and CLI output before Qwen sees the package. Set `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true` to replace the single initial CLI build with dedicated Gemma section builders for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies; Python then merges the sections into the usual `config_artifacts` package. The graph runs a thinking-enabled, higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`, a thinking-enabled pre-judge config refiner with `FORTIGATE_CONFIG_REFINER_MODEL_NAME`, and up to `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT` thinking-enabled autonomous repair passes for fixable engineering issues before asking for human review. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` or `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip either model pass, and tune `FORTIGATE_BUILDER_REVIEW_TEMPERATURE` to change how aggressively the builder review explores network, firewall policy, and security improvements. Reasoning traces returned by the model are not saved or rendered. Saved FortiGate runs expose human review questions derived from remaining judge items; reviewer answers are interpreted by the generation model into config instructions, accepted-risk notes, or requests for more detail. The package is marked final only when the judge returns `pass`.
+The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes.
+
+Full graph shape:
+
+```text
+intake_request
+  -> parse_existing_config
+  -> retrieve_standards
+  -> identify_missing_inputs
+  -> optional human_clarification_checkpoint
+  -> build_logical_design
+  -> build_fortigate_design
+  -> build_implementation_intent
+  -> check_intent_contract
+  -> optional repair_implementation_intent
+  -> analyze_change_impact
+  -> monolith generate_config_artifacts
+     or sectional generation:
+        build_interfaces_dhcp_section
+        -> build_fortiswitch_section
+        -> build_wifi_section
+        -> build_sdwan_routing_section
+        -> build_objects_services_section
+        -> build_firewall_policies_section
+        -> validate_config_sections
+        -> assemble_sectional_config_artifacts
+  -> validate_config
+  -> check_standards
+  -> risk_review
+  -> check_cli_contract
+  -> optional autonomous_repair_config_artifacts
+  -> optional builder_review_config_artifacts
+  -> validation / standards / risk / CLI completeness loop
+  -> optional refine_config_artifacts
+  -> validation / standards / risk / CLI completeness loop
+  -> frontier_model_judge
+  -> optional autonomous_repair_config_artifacts
+  -> optional revise_after_judge or regenerate_config_after_judge
+  -> optional human_review_checkpoint
+  -> finalize_package
+```
+
+The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. By default, the graph builds a structured implementation intent contract before CLI generation, covering VLANs, DHCP decisions, SD-WAN behavior, FortiSwitch, WiFi, object inventory, and the firewall policy matrix. Deterministic completeness gates inspect both intent and CLI output before Qwen sees the package.
+
+Set `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true` to replace the single initial CLI build with dedicated Gemma section builders for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies; Python then merges the sections into the usual `config_artifacts` package. The graph runs a thinking-enabled, higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`, a thinking-enabled pre-judge config refiner with `FORTIGATE_CONFIG_REFINER_MODEL_NAME`, and up to `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT` thinking-enabled autonomous repair passes for fixable engineering issues before asking for human review. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` or `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip either model pass, and tune `FORTIGATE_BUILDER_REVIEW_TEMPERATURE` to change how aggressively the builder review explores network, firewall policy, and security improvements. Reasoning traces returned by the model are not saved or rendered. Saved FortiGate runs expose human review questions derived from remaining judge items; reviewer answers are interpreted by the generation model into config instructions, accepted-risk notes, or requests for more detail. The package is marked final only when the judge returns `pass`.
 
 ## Standards Library
 
@@ -546,6 +629,8 @@ The package response includes `standard_requirements`, `compliance_matrix`, `for
 | `GET` | `/memory/research/backlog` | Unresolved research issues |
 | `GET` | `/memory/research/dedup?q=...` | Repeated claims and repeated sources |
 
+Frontend callers use the same backend paths with `/api` prepended, for example `POST /api/network-design/message` and `POST /api/fortigate/design`. The frontend server strips `/api` and proxies to `API_PROXY_TARGET`.
+
 Examples:
 
 ```bash
@@ -636,7 +721,9 @@ Langfuse:
 Verified behavior as of this update:
 
 - FastAPI health returns `ok` and model `gemma-local`.
-- Research UI is available on port `8080`.
+- Password-protected frontend is available on port `8080`.
+- `/api/health` proxies through the frontend to the internal FastAPI health endpoint after login.
+- Network Design is the default frontend; the Research UI remains available at `/research`.
 - LangGraph app calls LiteLLM on `agent-host.example:4010/v1`.
 - Langfuse traces are enabled.
 - Redis checkpointing supports chat and interactive graph state.
@@ -648,9 +735,11 @@ Verified behavior as of this update:
 ## Operational Notes And Caveats
 
 - Host networking is a Linux-focused deployment choice. If you run the stack on Docker Desktop, adjust the Compose files and URLs for that environment.
+- For public access, publish only the frontend. Keep `:8001`, Redis, Neo4j, LiteLLM, and Langfuse internal unless they are separately secured.
+- If the UI loads but the first chat/design interaction does not respond, confirm the page is using `apiBase = "/api"` and that `API_PROXY_TARGET` resolves from inside the frontend container.
 - Neo4j memory writes are intentionally best-effort while JSON remains the fallback archive.
 - Tavily is preferred for search when configured; DuckDuckGo HTML is a fallback and can be less reliable.
-- The system is still local-dev oriented. Auth, user roles, and multi-user approval attribution are future work.
+- The password gate is intentionally simple. Cloudflare Access, SSO, user roles, and multi-user approval attribution are future work.
 - OPA is not wired yet. Policy checks are currently deterministic Python checks inside the research graph.
 
 ## Good Next Steps
