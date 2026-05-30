@@ -2065,6 +2065,17 @@ def _looks_off_topic_network_design(text: str) -> bool:
     return any(term in lowered for term in off_topic_terms) and not any(term in lowered for term in network_terms)
 
 
+def _clean_network_design_reply(text: str) -> str:
+    cleaned = re.sub(
+        r"^\s*I cannot fulfill the request to search for sports schedules\.\s*"
+        r"This conversation is strictly limited to network design\.\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned or text
+
+
 @app.post("/network-design/message", response_model=NetworkDesignChatResponse)
 async def network_design_message(request: NetworkDesignRequest):
     thread_id = request.thread_id or str(uuid4())
@@ -2076,7 +2087,8 @@ async def network_design_message(request: NetworkDesignRequest):
                 SystemMessage(
                     content=(
                         "You are the Network Design Helper, a standards-aware assistant for network design engineers. "
-                        "This conversation is only about network design. Do not answer sports, news, schedules, or unrelated topics. "
+                        "Keep the conversation focused on network design, site requirements, standards, and FortiGate handoff details. "
+                        "If a message is unrelated, briefly redirect to the network design task without naming unrelated categories. "
                         "Have a normal conversational back-and-forth. Ask focused follow-up questions when details are missing. "
                         "Use the provided standards context when relevant, but do not over-cite. Do not claim any device changes were made. "
                         "When the user seems ready, tell them to generate the design package and FortiGate handoff. "
@@ -2100,7 +2112,7 @@ async def network_design_message(request: NetworkDesignRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if app.state.langfuse is not None:
         app.state.langfuse.flush()
-    content = str(result.content)
+    content = _clean_network_design_reply(str(result.content))
     if _looks_off_topic_network_design(content):
         content = _network_design_fallback_reply(request, standards)
     return NetworkDesignChatResponse(
