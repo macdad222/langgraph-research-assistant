@@ -551,6 +551,17 @@ def render_fortigate_markdown(response: FortiGateRunResponse) -> str:
         str(artifacts.get("cli_config") or "No CLI config generated."),
         "```",
         "",
+        "## Sectional Generation",
+        "",
+        "### Config Sections",
+        "```json",
+        json.dumps(response.config_sections, indent=2),
+        "```",
+        "### Section Validation",
+        "```json",
+        json.dumps(response.section_validation_report, indent=2),
+        "```",
+        "",
         "## Rollback Plan",
         "",
         str(artifacts.get("rollback_plan") or "No rollback plan generated."),
@@ -712,7 +723,9 @@ def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_
         implementation_intent=result.get("implementation_intent", {}),
         intent_completeness_report=result.get("intent_completeness_report", {}),
         change_impact=result.get("change_impact", {}),
+        config_sections=result.get("config_sections", {}),
         config_artifacts=result.get("config_artifacts", {}),
+        section_validation_report=result.get("section_validation_report", {}),
         cli_completeness_report=result.get("cli_completeness_report", {}),
         validation_report=FortiGateValidationReport(**result.get("validation_report", {})),
         standards_report=FortiGateValidationReport(**result.get("standards_report", {})),
@@ -777,6 +790,8 @@ def _fortigate_judge_packet(run: FortiGateRunResponse) -> dict[str, Any]:
         "implementation_intent": run.implementation_intent,
         "intent_completeness_report": run.intent_completeness_report,
         "change_impact": run.change_impact,
+        "config_sections": run.config_sections,
+        "section_validation_report": run.section_validation_report,
         "config_artifacts": run.config_artifacts,
         "cli_completeness_report": run.cli_completeness_report,
         "validation_report": run.validation_report.model_dump(),
@@ -795,6 +810,8 @@ def _fortigate_policy_state(run: FortiGateRunResponse) -> dict[str, Any]:
         "current_config_summary": run.current_config_summary.model_dump(),
         "standards": [item.model_dump() for item in run.standards],
         "implementation_intent": run.implementation_intent,
+        "config_sections": run.config_sections,
+        "section_validation_report": run.section_validation_report,
         "config_artifacts": run.config_artifacts,
     }
 
@@ -1132,6 +1149,22 @@ def get_float_env(name: str, default: float) -> float:
         return default
 
 
+def get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def fortigate_model_extra_body(enable_thinking: bool = False, passthrough: bool = False) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if passthrough:
+        body["metadata"] = {"agentic_gateway_openclaw_passthrough": True}
+    if enable_thinking:
+        body["chat_template_kwargs"] = {"enable_thinking": True}
+    return body
+
+
 def langfuse_enabled() -> bool:
     return all(os.getenv(name) for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"))
 
@@ -1156,10 +1189,11 @@ async def lifespan(app: FastAPI):
         app.state.fortigate_judge_model_name = os.getenv("FORTIGATE_JUDGE_MODEL_NAME", model_name)
         app.state.fortigate_builder_review_mode = os.getenv("FORTIGATE_BUILDER_REVIEW_MODE", "pre_refine")
         app.state.fortigate_builder_review_model_name = os.getenv("FORTIGATE_BUILDER_REVIEW_MODEL_NAME", model_name)
-        app.state.fortigate_builder_review_temperature = get_float_env("FORTIGATE_BUILDER_REVIEW_TEMPERATURE", 0.7)
+        app.state.fortigate_builder_review_temperature = get_float_env("FORTIGATE_BUILDER_REVIEW_TEMPERATURE", 1.0)
         app.state.fortigate_config_refinement_mode = os.getenv("FORTIGATE_CONFIG_REFINEMENT_MODE", "pre_judge")
         app.state.fortigate_config_refiner_model_name = os.getenv("FORTIGATE_CONFIG_REFINER_MODEL_NAME", app.state.fortigate_judge_model_name)
         app.state.fortigate_autonomous_repair_limit = int(get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_LIMIT", 2))
+        app.state.fortigate_sectional_generation_enabled = get_bool_env("FORTIGATE_SECTIONAL_GENERATION_ENABLED", False)
         app.state.langfuse = None
         app.state.langfuse_handler = None
         app.state.research_memory = Neo4jResearchMemory.from_env()
@@ -1192,7 +1226,7 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=0,
-            extra_body={"metadata": {"agentic_gateway_openclaw_passthrough": True}},
+            extra_body=fortigate_model_extra_body(enable_thinking=True, passthrough=True),
         )
         app.state.fortigate_judge_model = judge_model
         builder_review_model = ChatOpenAI(
@@ -1200,8 +1234,17 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=app.state.fortigate_builder_review_temperature,
+            extra_body=fortigate_model_extra_body(enable_thinking=True),
         )
         app.state.fortigate_builder_review_model = builder_review_model
+        autonomous_repair_model = ChatOpenAI(
+            model=model_name,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=0.4,
+            extra_body=fortigate_model_extra_body(enable_thinking=True),
+        )
+        app.state.fortigate_autonomous_repair_model = autonomous_repair_model
         refiner_model = judge_model
         if app.state.fortigate_config_refiner_model_name != app.state.fortigate_judge_model_name:
             refiner_model = ChatOpenAI(
@@ -1209,7 +1252,7 @@ async def lifespan(app: FastAPI):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=0,
-                extra_body={"metadata": {"agentic_gateway_openclaw_passthrough": True}},
+                extra_body=fortigate_model_extra_body(enable_thinking=True, passthrough=True),
             )
         app.state.fortigate_config_refiner_model = refiner_model
         app.state.fortigate_graph = build_fortigate_graph(
@@ -1220,10 +1263,13 @@ async def lifespan(app: FastAPI):
             builder_review_model=builder_review_model,
             builder_review_model_name=app.state.fortigate_builder_review_model_name,
             builder_review_mode=app.state.fortigate_builder_review_mode,
+            autonomous_repair_model=autonomous_repair_model,
+            autonomous_repair_model_name=model_name,
             config_refiner_model=refiner_model,
             config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
             config_refinement_mode=app.state.fortigate_config_refinement_mode,
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
+            sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
         )
         app.state.interactive_fortigate_graph = build_fortigate_graph(
             llm,
@@ -1235,10 +1281,13 @@ async def lifespan(app: FastAPI):
             builder_review_model=builder_review_model,
             builder_review_model_name=app.state.fortigate_builder_review_model_name,
             builder_review_mode=app.state.fortigate_builder_review_mode,
+            autonomous_repair_model=autonomous_repair_model,
+            autonomous_repair_model_name=model_name,
             config_refiner_model=refiner_model,
             config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
             config_refinement_mode=app.state.fortigate_config_refinement_mode,
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
+            sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
         )
         app.state.network_design_graph = build_network_design_graph(llm, checkpointer)
         try:

@@ -17,7 +17,7 @@ from app.fortigate_models import (
     FortiGateQuestion,
     FortiGateStandardChunk,
 )
-from app.fortigate_policy import check_cli_completeness, check_intent_completeness, check_standards_compliance, review_risk, validate_config_artifacts
+from app.fortigate_policy import check_cli_completeness, check_intent_completeness, check_section_completeness, check_standards_compliance, review_risk, validate_config_artifacts
 from app.standards import retrieve_fortigate_standards
 
 
@@ -34,7 +34,9 @@ class FortiGateState(TypedDict, total=False):
     intent_completeness_report: dict[str, Any]
     intent_repaired: bool
     change_impact: dict[str, Any]
+    config_sections: dict[str, Any]
     config_artifacts: dict[str, Any]
+    section_validation_report: dict[str, Any]
     cli_completeness_report: dict[str, Any]
     validation_report: dict[str, Any]
     standards_report: dict[str, Any]
@@ -350,6 +352,109 @@ def _fallback_cli(intake: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+SECTION_ORDER = [
+    "interfaces_dhcp",
+    "fortiswitch",
+    "wifi",
+    "sdwan_routing",
+    "objects_services",
+    "firewall_policies",
+]
+
+
+SECTION_PROMPTS = {
+    "interfaces_dhcp": (
+        "Build only FortiGate physical interface, VLAN interface, zone, and DHCP server CLI blocks. "
+        "Every LAN/VLAN in implementation_intent must have an interface decision and DHCP decision. "
+        "Use placeholders and requires_human_input for unknown addressing, parent interfaces, DHCP ranges, or DNS values."
+    ),
+    "fortiswitch": (
+        "Build only FortiSwitch/FortiLink managed switch CLI blocks and notes. Include FortiLink interface assumptions, "
+        "switch-controller VLAN mappings, port profile intent, native/allowed VLAN placeholders, LLDP/STP/PoE notes, "
+        "and requires_human_input for switch serials, uplink ports, port maps, or PoE assignments."
+    ),
+    "wifi": (
+        "Build only FortiAP/wireless controller CLI blocks and notes. Include SSIDs, tunnel/bridge mode, VLAN mappings, "
+        "guest isolation, AP profiles, and firewall policy dependencies. Put WPA keys, RADIUS servers, captive portal "
+        "details, AP groups, and AP serials in requires_human_input when not supplied."
+    ),
+    "sdwan_routing": (
+        "Build only SD-WAN and routing CLI blocks. Include SD-WAN members, zones, health checks, steering services, "
+        "default route behavior, and static routes. Do not invent public gateways or circuit details."
+    ),
+    "objects_services": (
+        "Build only firewall address objects, address groups, service objects, VIPs, and IP pools required by the intent "
+        "and policy matrix. Prefer named objects over raw all, and list every created object in objects_defined."
+    ),
+    "firewall_policies": (
+        "Build only firewall policy CLI blocks from the policy matrix. Use least privilege, explicit logging, NAT when "
+        "required, inspection profiles where appropriate, and explicit deny/segmentation policies for guest/IoT/WiFi."
+    ),
+}
+
+
+def _section_contract_prompt(section_name: str) -> str:
+    return (
+        "Return only JSON with keys section_name, cli_blocks, objects_defined, references_required, assumptions, "
+        "requires_human_input, validation_notes. Build one FortiGate configuration section only; do not generate unrelated "
+        f"sections. section_name must be {section_name}. Use implementation_intent as the source of truth. Do not invent "
+        "site-specific values, secrets, public IPs, gateways, passwords, PSKs, RADIUS servers, syslog/SNMP/DNS targets, "
+        "switch serials, AP serials, or port maps. Put unknowns in requires_human_input and use clear placeholders in CLI. "
+        "Every CLI reference should be listed in references_required, and every object/interface/service created here should "
+        f"be listed in objects_defined. {SECTION_PROMPTS[section_name]}"
+    )
+
+
+def _normalize_section(section_name: str, data: dict[str, Any]) -> dict[str, Any]:
+    section = data.get("config_section") if isinstance(data.get("config_section"), dict) else data
+    return {
+        "section_name": str(section.get("section_name") or section_name),
+        "cli_blocks": _as_list(section.get("cli_blocks")),
+        "objects_defined": _as_list(section.get("objects_defined")),
+        "references_required": _as_list(section.get("references_required")),
+        "assumptions": _as_list(section.get("assumptions")),
+        "requires_human_input": _as_list(section.get("requires_human_input")),
+        "validation_notes": _as_list(section.get("validation_notes")),
+    }
+
+
+def _merge_section_artifacts(state: FortiGateState) -> dict[str, Any]:
+    sections = state.get("config_sections", {})
+    cli_blocks: list[str] = []
+    assumptions: list[str] = []
+    human_inputs: list[str] = []
+    implementation_notes: list[str] = []
+    object_tables: dict[str, Any] = {}
+    for section_name in SECTION_ORDER:
+        section = sections.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        section_cli = [block for block in _as_list(section.get("cli_blocks")) if block.strip()]
+        if section_cli:
+            cli_blocks.append(f"# --- {section_name} ---")
+            cli_blocks.extend(section_cli)
+        object_tables[section_name] = section.get("objects_defined", [])
+        assumptions.extend(f"{section_name}: {item}" for item in _as_list(section.get("assumptions")))
+        human_inputs.extend(f"{section_name}: {item}" for item in _as_list(section.get("requires_human_input")))
+        implementation_notes.extend(f"{section_name}: {item}" for item in _as_list(section.get("validation_notes")))
+    return {
+        "cli_config": "\n".join(cli_blocks).strip() or _fallback_cli(state.get("intake", {})),
+        "object_tables": object_tables,
+        "policy_table": sections.get("firewall_policies", {}).get("validation_notes", []) if isinstance(sections.get("firewall_policies"), dict) else [],
+        "rollback_plan": [
+            "Review generated section boundaries before implementation.",
+            "Back up the current FortiGate configuration before applying any block.",
+            "Apply changes during an approved maintenance window and revert by restoring the prior configuration if validation fails.",
+        ],
+        "assumptions": assumptions,
+        "standards_citations": [],
+        "implementation_notes": implementation_notes,
+        "sectional_generation": True,
+        "safety_label": "DRAFT ONLY - NOT APPLIED TO DEVICE",
+        "requires_human_input": human_inputs,
+    }
+
+
 def build_fortigate_graph(
     model: ChatOpenAI,
     checkpointer: AsyncRedisSaver,
@@ -360,10 +465,13 @@ def build_fortigate_graph(
     builder_review_model: ChatOpenAI | None = None,
     builder_review_model_name: str = "",
     builder_review_mode: str = "pre_refine",
+    autonomous_repair_model: ChatOpenAI | None = None,
+    autonomous_repair_model_name: str = "",
     config_refiner_model: ChatOpenAI | None = None,
     config_refiner_model_name: str = "",
     config_refinement_mode: str = "pre_judge",
     autonomous_repair_limit: int = 2,
+    sectional_generation_enabled: bool = False,
 ):
     normalized_builder_review_mode = builder_review_mode if builder_review_mode in {"off", "pre_refine"} else "pre_refine"
     normalized_refinement_mode = config_refinement_mode if config_refinement_mode in {"off", "pre_judge"} else "pre_judge"
@@ -449,11 +557,14 @@ def build_fortigate_graph(
                     content=(
                         "Return only JSON with key implementation_intent. Build a FortiGate implementation contract that the CLI "
                         "must satisfy before any config is generated. Include keys: interface_inventory, dhcp_plan, sdwan_plan, "
-                        "policy_matrix, object_inventory, logging_plan, assumptions, requires_human_input. For every LAN/VLAN, "
+                        "fortiswitch_plan, wifi_plan, policy_matrix, object_inventory, logging_plan, assumptions, "
+                        "requires_human_input. For every LAN/VLAN, "
                         "include name, vlan_id when known, subnet, gateway, zone, role, and dhcp_mode. For DHCP, decide enable, "
                         "disable, or needs_human_input; enable DHCP for user/guest VLANs when subnet and gateway are known unless "
                         "the intake says otherwise. For dual-WAN, include SD-WAN members, health_checks, steering_rules, and "
-                        "default_route_behavior. For firewall policies, build a complete policy matrix with source, destination, "
+                        "default_route_behavior. For FortiSwitch, include FortiLink, VLAN/port profile, and port-map decisions "
+                        "or explicit human inputs. For WiFi, include SSIDs, security mode, VLAN mappings, guest isolation, AP "
+                        "profiles, and required human inputs such as PSKs/RADIUS/AP serials. For firewall policies, build a complete policy matrix with source, destination, "
                         "service, action, nat, logging, inspection_profile, and rationale. Put missing site-specific values in "
                         "requires_human_input rather than inventing them."
                     )
@@ -602,6 +713,92 @@ def build_fortigate_graph(
         artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
         return _trace_update(state, {"config_artifacts": artifacts}, "generate_config_artifacts", started_at, started_perf, "Generated draft config artifacts.")
 
+    async def build_config_section(state: FortiGateState, section_name: str) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        response = await model.ainvoke(
+            [
+                SystemMessage(content=_section_contract_prompt(section_name)),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "section_name": section_name,
+                            "intake": state.get("intake", {}),
+                            "current_config_summary": state.get("current_config_summary", {}),
+                            "logical_design": state.get("logical_design", {}),
+                            "fortigate_design": state.get("fortigate_design", {}),
+                            "implementation_intent": state.get("implementation_intent", {}),
+                            "intent_completeness_report": state.get("intent_completeness_report", {}),
+                            "change_impact": state.get("change_impact", {}),
+                            "prior_sections": state.get("config_sections", {}),
+                            "standards": _standards_payload(state.get("standards", [])),
+                        },
+                        indent=2,
+                    )
+                ),
+            ]
+        )
+        data = _extract_json_object(str(response.content))
+        section = _normalize_section(section_name, data)
+        sections = {**state.get("config_sections", {}), section_name: section}
+        human_inputs = [str(item) for item in section.get("requires_human_input", [])]
+        return _trace_update(
+            state,
+            {
+                "config_sections": sections,
+                "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *human_inputs])),
+            },
+            f"build_{section_name}_section",
+            started_at,
+            started_perf,
+            f"Built sectional FortiGate config output for {section_name}.",
+        )
+
+    async def build_interfaces_dhcp_section(state: FortiGateState) -> FortiGateState:
+        return await build_config_section(state, "interfaces_dhcp")
+
+    async def build_fortiswitch_section(state: FortiGateState) -> FortiGateState:
+        return await build_config_section(state, "fortiswitch")
+
+    async def build_wifi_section(state: FortiGateState) -> FortiGateState:
+        return await build_config_section(state, "wifi")
+
+    async def build_sdwan_routing_section(state: FortiGateState) -> FortiGateState:
+        return await build_config_section(state, "sdwan_routing")
+
+    async def build_objects_services_section(state: FortiGateState) -> FortiGateState:
+        return await build_config_section(state, "objects_services")
+
+    async def build_firewall_policies_section(state: FortiGateState) -> FortiGateState:
+        return await build_config_section(state, "firewall_policies")
+
+    async def validate_config_sections(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        report = check_section_completeness(state).model_dump()
+        return _trace_update(
+            state,
+            {"section_validation_report": report},
+            "validate_config_sections",
+            started_at,
+            started_perf,
+            f"Section validation produced {len(report.get('warnings', []))} warning(s) and {len(report.get('blocking_issues', []))} blocker(s).",
+        )
+
+    async def assemble_sectional_config_artifacts(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        artifacts = _merge_section_artifacts(state)
+        return _trace_update(
+            state,
+            {"config_artifacts": artifacts},
+            "assemble_sectional_config_artifacts",
+            started_at,
+            started_perf,
+            f"Deterministically assembled {len(state.get('config_sections', {}))} FortiGate config section(s).",
+        )
+
+    def route_after_change_impact(state: FortiGateState) -> str:
+        _ = state
+        return "sectional" if sectional_generation_enabled else "monolith"
+
     async def validate_config(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         report = validate_config_artifacts(state).model_dump()
@@ -632,9 +829,13 @@ def build_fortigate_graph(
     async def autonomous_repair_config_artifacts(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         iteration = int(state.get("autonomous_repair_iterations", 0) or 0) + 1
+        repair_model = autonomous_repair_model or model
+        repair_model_name = autonomous_repair_model_name or getattr(model, "model_name", "configured-model")
         report = state.get("judge_report", {})
         auto_fixable, requires_human = _classify_judge_items(report)
         local_findings = [
+            *state.get("section_validation_report", {}).get("blocking_issues", []),
+            *state.get("section_validation_report", {}).get("warnings", []),
             *state.get("cli_completeness_report", {}).get("blocking_issues", []),
             *state.get("cli_completeness_report", {}).get("warnings", []),
             *state.get("validation_report", {}).get("blocking_issues", []),
@@ -642,7 +843,7 @@ def build_fortigate_graph(
             *state.get("standards_report", {}).get("warnings", []),
             *state.get("risk_report", {}).get("warnings", []),
         ]
-        response = await model.ainvoke(
+        response = await repair_model.ainvoke(
             [
                 SystemMessage(
                     content=(
@@ -660,11 +861,14 @@ def build_fortigate_graph(
                             "iteration": iteration,
                             "intake": state.get("intake", {}),
                             "implementation_intent": state.get("implementation_intent", {}),
+                            "config_sections": state.get("config_sections", {}),
+                            "section_validation_report": state.get("section_validation_report", {}),
                             "current_config_artifacts": state.get("config_artifacts", {}),
                             "local_findings": local_findings,
                             "judge_report": report,
                             "auto_fixable_judge_items": auto_fixable,
                             "requires_human_judge_items": requires_human,
+                            "repair_model": repair_model_name,
                             "standards": _standards_payload(state.get("standards", [])),
                         },
                         indent=2,
@@ -689,7 +893,7 @@ def build_fortigate_graph(
                 "autonomous_repair_config_artifacts",
                 started_at,
                 started_perf,
-                f"Autonomous repair pass {iteration} updated config artifacts.",
+                f"Autonomous repair pass {iteration} updated config artifacts with {repair_model_name}.",
                 branch="repaired",
             )
         return _trace_update(
@@ -731,6 +935,8 @@ def build_fortigate_graph(
                             "fortigate_design": state.get("fortigate_design", {}),
                             "implementation_intent": state.get("implementation_intent", {}),
                             "change_impact": state.get("change_impact", {}),
+                            "config_sections": state.get("config_sections", {}),
+                            "section_validation_report": state.get("section_validation_report", {}),
                             "config_artifacts": state.get("config_artifacts", {}),
                             "intent_completeness_report": state.get("intent_completeness_report", {}),
                             "cli_completeness_report": state.get("cli_completeness_report", {}),
@@ -795,6 +1001,8 @@ def build_fortigate_graph(
                             "fortigate_design": state.get("fortigate_design", {}),
                             "implementation_intent": state.get("implementation_intent", {}),
                             "change_impact": state.get("change_impact", {}),
+                            "config_sections": state.get("config_sections", {}),
+                            "section_validation_report": state.get("section_validation_report", {}),
                             "config_artifacts": state.get("config_artifacts", {}),
                             "intent_completeness_report": state.get("intent_completeness_report", {}),
                             "cli_completeness_report": state.get("cli_completeness_report", {}),
@@ -845,6 +1053,8 @@ def build_fortigate_graph(
             "implementation_intent": state.get("implementation_intent", {}),
             "intent_completeness_report": state.get("intent_completeness_report", {}),
             "change_impact": state.get("change_impact", {}),
+            "config_sections": state.get("config_sections", {}),
+            "section_validation_report": state.get("section_validation_report", {}),
             "config_artifacts": state.get("config_artifacts", {}),
             "cli_completeness_report": state.get("cli_completeness_report", {}),
             "validation_report": state.get("validation_report", {}),
@@ -879,7 +1089,13 @@ def build_fortigate_graph(
         if normalized_refinement_mode == "pre_judge" and not state.get("config_refinement"):
             return "refine"
         cli_report = state.get("cli_completeness_report", {})
-        cli_findings = [*cli_report.get("blocking_issues", []), *cli_report.get("warnings", [])]
+        section_report = state.get("section_validation_report", {})
+        cli_findings = [
+            *section_report.get("blocking_issues", []),
+            *section_report.get("warnings", []),
+            *cli_report.get("blocking_issues", []),
+            *cli_report.get("warnings", []),
+        ]
         if cli_findings and int(state.get("autonomous_repair_iterations", 0) or 0) < autonomous_repair_limit:
             return "autonomous_repair"
         return "judge"
@@ -1014,6 +1230,14 @@ def build_fortigate_graph(
     graph.add_node("repair_implementation_intent", repair_implementation_intent)
     graph.add_node("analyze_change_impact", analyze_change_impact)
     graph.add_node("generate_config_artifacts", generate_config_artifacts)
+    graph.add_node("build_interfaces_dhcp_section", build_interfaces_dhcp_section)
+    graph.add_node("build_fortiswitch_section", build_fortiswitch_section)
+    graph.add_node("build_wifi_section", build_wifi_section)
+    graph.add_node("build_sdwan_routing_section", build_sdwan_routing_section)
+    graph.add_node("build_objects_services_section", build_objects_services_section)
+    graph.add_node("build_firewall_policies_section", build_firewall_policies_section)
+    graph.add_node("validate_config_sections", validate_config_sections)
+    graph.add_node("assemble_sectional_config_artifacts", assemble_sectional_config_artifacts)
     graph.add_node("validate_config", validate_config)
     graph.add_node("check_standards", check_standards)
     graph.add_node("risk_review", risk_review)
@@ -1042,8 +1266,15 @@ def build_fortigate_graph(
     graph.add_edge("build_implementation_intent", "check_intent_contract")
     graph.add_conditional_edges("check_intent_contract", route_after_intent_check, {"repair": "repair_implementation_intent", "continue": "analyze_change_impact"})
     graph.add_edge("repair_implementation_intent", "check_intent_contract")
-    graph.add_edge("analyze_change_impact", "generate_config_artifacts")
-    graph.add_edge("analyze_change_impact", "generate_config_artifacts")
+    graph.add_conditional_edges("analyze_change_impact", route_after_change_impact, {"monolith": "generate_config_artifacts", "sectional": "build_interfaces_dhcp_section"})
+    graph.add_edge("build_interfaces_dhcp_section", "build_fortiswitch_section")
+    graph.add_edge("build_fortiswitch_section", "build_wifi_section")
+    graph.add_edge("build_wifi_section", "build_sdwan_routing_section")
+    graph.add_edge("build_sdwan_routing_section", "build_objects_services_section")
+    graph.add_edge("build_objects_services_section", "build_firewall_policies_section")
+    graph.add_edge("build_firewall_policies_section", "validate_config_sections")
+    graph.add_edge("validate_config_sections", "assemble_sectional_config_artifacts")
+    graph.add_edge("assemble_sectional_config_artifacts", "validate_config")
     graph.add_edge("generate_config_artifacts", "validate_config")
     graph.add_edge("validate_config", "check_standards")
     graph.add_edge("check_standards", "risk_review")

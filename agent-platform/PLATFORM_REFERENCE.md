@@ -148,10 +148,11 @@ MODEL_NAME=gemma-local
 FORTIGATE_JUDGE_MODEL_NAME=Qwen3.6-27B
 FORTIGATE_BUILDER_REVIEW_MODE=pre_refine
 FORTIGATE_BUILDER_REVIEW_MODEL_NAME=gemma-local
-FORTIGATE_BUILDER_REVIEW_TEMPERATURE=0.7
+FORTIGATE_BUILDER_REVIEW_TEMPERATURE=1.0
 FORTIGATE_CONFIG_REFINEMENT_MODE=pre_judge
 FORTIGATE_CONFIG_REFINER_MODEL_NAME=Qwen3.6-27B
 FORTIGATE_AUTONOMOUS_REPAIR_LIMIT=2
+FORTIGATE_SECTIONAL_GENERATION_ENABLED=false
 LANGFUSE_PUBLIC_KEY=<Langfuse public key>
 LANGFUSE_SECRET_KEY=<Langfuse secret key>
 LANGFUSE_BASE_URL=http://agent-host.example:3001
@@ -370,7 +371,7 @@ Open:
 http://localhost:8080/fortigate
 ```
 
-The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. By default, the graph builds a structured implementation intent contract before CLI generation, covering VLANs, DHCP decisions, SD-WAN behavior, object inventory, and the firewall policy matrix. Deterministic completeness gates inspect both intent and CLI output before Qwen sees the package. The graph runs a higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`, a pre-judge config refiner with `FORTIGATE_CONFIG_REFINER_MODEL_NAME`, and up to `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT` autonomous repair passes for fixable engineering issues before asking for human review. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` or `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip either model pass, and tune `FORTIGATE_BUILDER_REVIEW_TEMPERATURE` to change how aggressively the builder review explores network, firewall policy, and security improvements. Saved FortiGate runs expose human review questions derived from remaining judge items; reviewer answers are interpreted by the generation model into config instructions, accepted-risk notes, or requests for more detail. The package is marked final only when the judge returns `pass`.
+The FortiGate agent is artifact-only. It can parse existing configs, build logical and FortiGate-specific designs, generate draft CLI configuration, validate the result, check standards, run a model judge, and save review-ready packages. It does not make live device changes. The judge uses `FORTIGATE_JUDGE_MODEL_NAME`; judge calls bypass LiteLLM's web-search interception so the full review packet is judged directly. By default, the graph builds a structured implementation intent contract before CLI generation, covering VLANs, DHCP decisions, SD-WAN behavior, FortiSwitch, WiFi, object inventory, and the firewall policy matrix. Deterministic completeness gates inspect both intent and CLI output before Qwen sees the package. Set `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true` to replace the single initial CLI build with dedicated Gemma section builders for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies; Python then merges the sections into the usual `config_artifacts` package. The graph runs a thinking-enabled, higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`, a thinking-enabled pre-judge config refiner with `FORTIGATE_CONFIG_REFINER_MODEL_NAME`, and up to `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT` thinking-enabled autonomous repair passes for fixable engineering issues before asking for human review. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` or `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip either model pass, and tune `FORTIGATE_BUILDER_REVIEW_TEMPERATURE` to change how aggressively the builder review explores network, firewall policy, and security improvements. Reasoning traces returned by the model are not saved or rendered. Saved FortiGate runs expose human review questions derived from remaining judge items; reviewer answers are interpreted by the generation model into config instructions, accepted-risk notes, or requests for more detail. The package is marked final only when the judge returns `pass`.
 
 ## Standards Library
 

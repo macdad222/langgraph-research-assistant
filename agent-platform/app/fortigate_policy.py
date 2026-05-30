@@ -249,3 +249,89 @@ def check_cli_completeness(state: dict[str, Any]) -> FortiGateValidationReport:
         warnings=warnings,
         checks=checks,
     )
+
+
+def check_section_completeness(state: dict[str, Any]) -> FortiGateValidationReport:
+    intake = state.get("intake") or {}
+    intent = state.get("implementation_intent") or {}
+    sections = state.get("config_sections") or {}
+    blocking: list[str] = []
+    warnings: list[str] = []
+    checks: list[str] = []
+
+    required_sections = [
+        "interfaces_dhcp",
+        "sdwan_routing",
+        "objects_services",
+        "firewall_policies",
+    ]
+    context_text = " ".join(
+        [
+            _as_text(intake.get("business_intent")),
+            _as_text(intake.get("additional_context")),
+            _as_text(intent),
+        ]
+    ).lower()
+    if any(token in context_text for token in ("fortiswitch", "fortilink", "switch-controller", "switch controller")):
+        required_sections.append("fortiswitch")
+    if any(token in context_text for token in ("wifi", "wi-fi", "wireless", "ssid", "fortiap")):
+        required_sections.append("wifi")
+
+    for section_name in required_sections:
+        section = sections.get(section_name)
+        if not isinstance(section, dict):
+            blocking.append(f"Section builder did not produce {section_name}.")
+            continue
+        cli_blocks = _as_list(section.get("cli_blocks"))
+        if cli_blocks:
+            checks.append(f"Section {section_name} produced {len(cli_blocks)} CLI block(s).")
+        else:
+            warnings.append(f"Section {section_name} did not produce CLI blocks.")
+
+    human_inputs: list[str] = []
+    defined: set[str] = set()
+    references: set[str] = set()
+    for section_name, section in sections.items():
+        if not isinstance(section, dict):
+            warnings.append(f"Section {section_name} is not structured JSON.")
+            continue
+        for item in _as_list(section.get("objects_defined")):
+            defined.add(_as_text(item).strip('"').lower())
+        for item in _as_list(section.get("references_required")):
+            references.add(_as_text(item).strip('"').lower())
+        human_inputs.extend(_as_text(item) for item in _as_list(section.get("requires_human_input")))
+
+    unresolved_references = sorted(ref for ref in references if ref and ref not in defined and ref not in {"all", "always", "any", "internet service"})
+    if unresolved_references:
+        warnings.append("Section outputs contain references that are not listed as defined objects/interfaces/services: " + ", ".join(unresolved_references[:12]) + ".")
+
+    if "wifi" in required_sections:
+        wifi = sections.get("wifi") if isinstance(sections.get("wifi"), dict) else {}
+        wifi_text = _as_text(wifi)
+        policy_text = _as_text(sections.get("firewall_policies"))
+        if "guest" in wifi_text.lower() and "deny" not in policy_text.lower():
+            warnings.append("WiFi guest intent appears present, but firewall policy section does not include an explicit deny/segmentation policy.")
+        if "ssid" in wifi_text.lower() and not any("password" in item.lower() or "radius" in item.lower() or "psk" in item.lower() for item in human_inputs):
+            warnings.append("WiFi section should list missing PSK/RADIUS/captive portal values as human input when they are not supplied.")
+
+    if "fortiswitch" in required_sections:
+        switch = sections.get("fortiswitch") if isinstance(sections.get("fortiswitch"), dict) else {}
+        switch_text = _as_text(switch).lower()
+        if "fortilink" not in switch_text:
+            warnings.append("FortiSwitch section appears required but does not mention FortiLink.")
+        if any(token in switch_text for token in ("port", "native vlan", "allowed vlan")) and not _as_list(switch.get("requires_human_input")):
+            warnings.append("FortiSwitch port mapping usually needs human-confirmed switch ports, serials, or VLAN assignments.")
+
+    if len(_as_list(intake.get("wan_circuits"))) > 1:
+        sdwan = sections.get("sdwan_routing") if isinstance(sections.get("sdwan_routing"), dict) else {}
+        sdwan_text = _as_text(sdwan).lower()
+        for token, label in (("health", "health checks"), ("service", "steering services"), ("route", "route behavior")):
+            if token not in sdwan_text:
+                warnings.append(f"SD-WAN/routing section may be missing {label}.")
+
+    return FortiGateValidationReport(
+        passed=not blocking,
+        blocking_issues=blocking,
+        warnings=warnings,
+        checks=checks,
+    )

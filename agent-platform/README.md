@@ -109,7 +109,8 @@ The FortiGate agent is artifact-only. It can:
 - Retrieve standards evidence.
 - Build logical and FortiGate-specific designs.
 - Generate draft CLI artifacts.
-- Run an optional higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`.
+- Optionally build draft CLI artifacts section-by-section for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies.
+- Run an optional thinking-enabled, higher-temperature builder review/refactor pass with `FORTIGATE_BUILDER_REVIEW_MODEL_NAME`.
 - Run deterministic validation and standards checks.
 - Optionally refactor the draft config with `FORTIGATE_CONFIG_REFINER_MODEL_NAME` before judge review.
 - Run a Qwen-configured model judge before human review.
@@ -123,7 +124,7 @@ No live device changes are made.
 The default FortiGate config flow is Gemma-first with Qwen refinement before Qwen judge:
 
 ```text
-generate_config_artifacts
+generate_config_artifacts or sectional section builders
   -> validate_config
   -> check_standards
   -> risk_review
@@ -141,9 +142,9 @@ generate_config_artifacts
   -> optional autonomous_repair_config_artifacts
 ```
 
-The graph now builds an `implementation_intent` contract before CLI generation. That contract covers VLANs, DHCP decisions, SD-WAN behavior, object inventory, and the firewall policy matrix. Deterministic completeness gates check both the intent and generated CLI before Qwen judge review.
+The graph now builds an `implementation_intent` contract before CLI generation. That contract covers VLANs, DHCP decisions, SD-WAN behavior, FortiSwitch, WiFi, object inventory, and the firewall policy matrix. Deterministic completeness gates check both the intent and generated CLI before Qwen judge review.
 
-Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=0.7` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model. Set `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT=2` to control how many autonomous repair passes can run before the system asks for human review.
+Set `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true` to use the section-by-section initial build. In that mode, Gemma builds dedicated sections for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies, then Python merges the sections into the standard `config_artifacts` package. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=1.0` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. The builder review, autonomous repair, Qwen refiner, and Qwen judge calls use vLLM template thinking via `chat_template_kwargs.enable_thinking=true`; reasoning traces are not saved or rendered. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model. Set `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT=2` to control how many autonomous repair passes can run before the system asks for human review.
 
 ## Human In The Loop
 
