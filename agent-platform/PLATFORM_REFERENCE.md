@@ -146,7 +146,7 @@ Important variables:
 ```text
 LITELLM_BASE_URL=http://agent-host.example:4010/v1
 LITELLM_API_KEY=<LiteLLM key>
-FRONTEND_PASSWORD=fortidesignagent
+FRONTEND_PASSWORD=<frontend password>
 API_PROXY_TARGET=http://agent-host.example:8001
 MODEL_NAME=gemma-local
 FORTIGATE_JUDGE_MODEL_NAME=Qwen3.6-27B
@@ -205,11 +205,11 @@ Do not paste the LiteLLM master key, generated UI passwords, Langfuse keys, Tavi
 The web frontend uses a simple shared password gate implemented in `frontend/server.js`.
 
 ```text
-Default password: fortidesignagent
+Password source: FRONTEND_PASSWORD in .env
 Cookie: fortigate_frontend_auth=1
 ```
 
-Set `FRONTEND_PASSWORD` in `.env` to change the password. This is a lightweight access gate for the design UI, not a replacement for Cloudflare Access, SSO, or per-user authorization.
+Set `FRONTEND_PASSWORD` in `.env` before starting the frontend. This is a lightweight access gate for the design UI, not a replacement for Cloudflare Access, SSO, or per-user authorization.
 
 ### Public / Cloudflare Access Pattern
 

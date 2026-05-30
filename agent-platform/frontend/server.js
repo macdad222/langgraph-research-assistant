@@ -5,7 +5,7 @@ const path = require("node:path");
 const querystring = require("node:querystring");
 
 const port = Number(process.env.PORT || 8080);
-const frontendPassword = process.env.FRONTEND_PASSWORD || "fortidesignagent";
+const frontendPassword = process.env.FRONTEND_PASSWORD || "";
 const apiProxyTarget = process.env.API_PROXY_TARGET || "http://agent.lab.internal:8001";
 const authCookie = "fortigate_frontend_auth=1";
 const indexPath = path.join(__dirname, "index.html");
@@ -98,7 +98,7 @@ const server = http.createServer((req, res) => {
     });
     req.on("end", () => {
       const form = querystring.parse(body);
-      if (form.password === frontendPassword) {
+      if (frontendPassword && form.password === frontendPassword) {
         res.writeHead(302, {
           "set-cookie": `${authCookie}; Path=/; HttpOnly; SameSite=Lax`,
           location: "/network-design",

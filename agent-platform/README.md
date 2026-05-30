@@ -43,7 +43,7 @@ The browser never needs to call `:8001` directly. `network-design.html`, `fortig
 The frontend has a simple shared password gate.
 
 ```env
-FRONTEND_PASSWORD=fortidesignagent
+FRONTEND_PASSWORD=replace-with-frontend-password
 API_PROXY_TARGET=http://agent-host.example:8001
 ```
 
