@@ -46,6 +46,7 @@ class FortiGateState(TypedDict, total=False):
     judge_report: dict[str, Any]
     judge_iterations: int
     autonomous_repair_iterations: int
+    autonomous_repair_tasks: list[dict[str, Any]]
     auto_fixed_items: list[str]
     requires_human_input: list[str]
     human_review_decision: str
@@ -95,6 +96,19 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return json.loads(stripped[start : end + 1])
     except json.JSONDecodeError:
         return {}
+
+
+def _is_context_window_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "contextwindowexceeded",
+            "context window",
+            "maximum context length",
+            "input_tokens",
+        )
+    )
 
 
 def _as_list(value: Any) -> list[str]:
@@ -415,7 +429,140 @@ def _normalize_section(section_name: str, data: dict[str, Any]) -> dict[str, Any
         "assumptions": _as_list(section.get("assumptions")),
         "requires_human_input": _as_list(section.get("requires_human_input")),
         "validation_notes": _as_list(section.get("validation_notes")),
+        "repair_notes": _as_list(section.get("repair_notes")),
     }
+
+
+def _local_repair_findings(state: FortiGateState) -> list[str]:
+    return [
+        *state.get("section_validation_report", {}).get("blocking_issues", []),
+        *state.get("section_validation_report", {}).get("warnings", []),
+        *state.get("cli_completeness_report", {}).get("blocking_issues", []),
+        *state.get("cli_completeness_report", {}).get("warnings", []),
+        *state.get("validation_report", {}).get("blocking_issues", []),
+        *state.get("validation_report", {}).get("warnings", []),
+        *state.get("standards_report", {}).get("warnings", []),
+        *state.get("risk_report", {}).get("warnings", []),
+    ]
+
+
+def _finding_sections(finding: str) -> list[str]:
+    lowered = finding.lower()
+    matches: list[str] = []
+    keyword_map = {
+        "interfaces_dhcp": ("interface", "dhcp", "vlan", "zone", "subnet", "netmask", "gateway"),
+        "fortiswitch": ("fortiswitch", "fortilink", "switch", "port"),
+        "wifi": ("wifi", "wireless", "ssid", "ap_", "ap ", "radius", "wpa"),
+        "sdwan_routing": ("sd-wan", "sdwan", "route", "routing", "health", "sla", "wan"),
+        "objects_services": ("object", "address", "service", "vip", "pool", "profile"),
+        "firewall_policies": ("policy", "policies", "srcaddr", "dstaddr", "srcintf", "dstintf", "logging", "deny"),
+    }
+    for section_name, keywords in keyword_map.items():
+        if any(keyword in lowered for keyword in keywords):
+            matches.append(section_name)
+    if "references that are not listed" in lowered or "undefined" in lowered or "not defined" in lowered:
+        for section_name in SECTION_ORDER:
+            if section_name in lowered and section_name not in matches:
+                matches.append(section_name)
+    return matches or ["firewall_policies"]
+
+
+def _is_placeholder_only_finding(finding: str) -> bool:
+    lowered = finding.lower()
+    placeholders = re.findall(r"<[^>\n]+>", finding)
+    return bool(placeholders) and not any(marker in lowered for marker in ("syntax", "invalid", "missing section", "required section"))
+
+
+def _plan_repair_tasks(state: FortiGateState) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    judge_auto_fixable, judge_requires_human = _classify_judge_items(state.get("judge_report", {}))
+    findings = [
+        *_local_repair_findings(state),
+        *judge_auto_fixable,
+        *[f"requires human input: {item}" for item in judge_requires_human],
+    ]
+    for finding in findings:
+        text = str(finding).strip()
+        if not text:
+            continue
+        deterministic = _is_placeholder_only_finding(text) or text.lower().startswith("requires human input:")
+        placeholders = sorted(set(re.findall(r"<[^>\n]+>", text)))
+        for section_name in _finding_sections(text):
+            key = (section_name, text.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            tasks.append(
+                {
+                    "task_id": f"repair-{len(tasks) + 1}",
+                    "section_name": section_name,
+                    "finding": text,
+                    "repair_type": "placeholder_review" if deterministic else "section_repair",
+                    "requires_model": not deterministic,
+                    "requires_human_input": [f"{section_name}: confirm value for {item}" for item in placeholders] or ([text] if deterministic else []),
+                }
+            )
+    return tasks
+
+
+def _section_intent_slice(state: FortiGateState, section_name: str) -> dict[str, Any]:
+    intent = state.get("implementation_intent", {})
+    if section_name == "interfaces_dhcp":
+        keys = ("interface_inventory", "dhcp_plan", "assumptions", "requires_human_input")
+    elif section_name == "fortiswitch":
+        keys = ("fortiswitch_plan", "interface_inventory", "assumptions", "requires_human_input")
+    elif section_name == "wifi":
+        keys = ("wifi_plan", "interface_inventory", "policy_matrix", "assumptions", "requires_human_input")
+    elif section_name == "sdwan_routing":
+        keys = ("sdwan_plan", "interface_inventory", "assumptions", "requires_human_input")
+    elif section_name == "objects_services":
+        keys = ("object_inventory", "policy_matrix", "assumptions", "requires_human_input")
+    else:
+        keys = ("policy_matrix", "object_inventory", "logging_plan", "assumptions", "requires_human_input")
+    return {key: intent.get(key) for key in keys if key in intent}
+
+
+def _section_dependency_context(state: FortiGateState, section_name: str) -> dict[str, Any]:
+    sections = state.get("config_sections", {})
+    dependencies: dict[str, Any] = {}
+    if section_name == "firewall_policies":
+        dependencies["interfaces_dhcp"] = sections.get("interfaces_dhcp", {})
+        dependencies["objects_services"] = sections.get("objects_services", {})
+    elif section_name == "objects_services":
+        dependencies["interfaces_dhcp"] = sections.get("interfaces_dhcp", {})
+        dependencies["firewall_policy_intent"] = state.get("intake", {}).get("firewall_policy_intent", "")
+    elif section_name in {"wifi", "fortiswitch", "sdwan_routing"}:
+        dependencies["interfaces_dhcp"] = sections.get("interfaces_dhcp", {})
+    return dependencies
+
+
+def _section_standards_payload(state: FortiGateState, section_name: str) -> list[dict[str, Any]]:
+    topic_keywords = {
+        "interfaces_dhcp": ("lan", "interface", "dhcp", "segmentation"),
+        "fortiswitch": ("switch", "fortilink", "lan"),
+        "wifi": ("wifi", "wireless", "guest"),
+        "sdwan_routing": ("sdwan", "wan", "route"),
+        "objects_services": ("object", "service", "firewall"),
+        "firewall_policies": ("policy", "firewall", "segmentation"),
+    }.get(section_name, ())
+    selected = []
+    for item in state.get("standards", []):
+        haystack = f"{item.get('topic', '')} {item.get('document', '')} {item.get('text', '')}".lower()
+        if any(keyword in haystack for keyword in topic_keywords):
+            selected.append(item)
+        if len(selected) >= 3:
+            break
+    return _standards_payload(selected or state.get("standards", [])[:2])
+
+
+def _merge_repaired_sections(state: FortiGateState, repaired_sections: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    sections = {**state.get("config_sections", {})}
+    for section_name, section in repaired_sections.items():
+        if section.get("cli_blocks"):
+            sections[section_name] = section
+    merged_state = {**state, "config_sections": sections}
+    return sections, _merge_section_artifacts(merged_state)
 
 
 def _merge_section_artifacts(state: FortiGateState) -> dict[str, Any]:
@@ -470,11 +617,22 @@ def build_fortigate_graph(
     config_refiner_model: ChatOpenAI | None = None,
     config_refiner_model_name: str = "",
     config_refinement_mode: str = "pre_judge",
+    context_fallback_model: ChatOpenAI | None = None,
+    context_fallback_model_name: str = "",
     autonomous_repair_limit: int = 2,
     sectional_generation_enabled: bool = False,
 ):
     normalized_builder_review_mode = builder_review_mode if builder_review_mode in {"off", "pre_refine"} else "pre_refine"
     normalized_refinement_mode = config_refinement_mode if config_refinement_mode in {"off", "pre_judge"} else "pre_judge"
+
+    async def ainvoke_with_context_fallback(model_to_use: ChatOpenAI, messages: list[Any], model_name: str) -> tuple[Any, str]:
+        try:
+            return await model_to_use.ainvoke(messages), model_name
+        except Exception as exc:
+            if context_fallback_model is None or not _is_context_window_error(exc):
+                raise
+            fallback_name = context_fallback_model_name or getattr(context_fallback_model, "model_name", "context-fallback-model")
+            return await context_fallback_model.ainvoke(messages), fallback_name
 
     async def intake_request(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
@@ -674,7 +832,8 @@ def build_fortigate_graph(
 
     async def generate_config_artifacts(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, used_model_name = await ainvoke_with_context_fallback(
+            model,
             [
                 SystemMessage(
                     content=(
@@ -705,17 +864,20 @@ def build_fortigate_graph(
                     )
                 ),
             ]
+            ,
+            getattr(model, "model_name", "configured-model"),
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data
         if not artifacts.get("cli_config"):
             artifacts["cli_config"] = _fallback_cli(state.get("intake", {}))
         artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
-        return _trace_update(state, {"config_artifacts": artifacts}, "generate_config_artifacts", started_at, started_perf, "Generated draft config artifacts.")
+        return _trace_update(state, {"config_artifacts": artifacts}, "generate_config_artifacts", started_at, started_perf, f"Generated draft config artifacts with {used_model_name}.")
 
     async def build_config_section(state: FortiGateState, section_name: str) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, used_model_name = await ainvoke_with_context_fallback(
+            model,
             [
                 SystemMessage(content=_section_contract_prompt(section_name)),
                 HumanMessage(
@@ -736,6 +898,8 @@ def build_fortigate_graph(
                     )
                 ),
             ]
+            ,
+            getattr(model, "model_name", "configured-model"),
         )
         data = _extract_json_object(str(response.content))
         section = _normalize_section(section_name, data)
@@ -750,7 +914,7 @@ def build_fortigate_graph(
             f"build_{section_name}_section",
             started_at,
             started_perf,
-            f"Built sectional FortiGate config output for {section_name}.",
+            f"Built sectional FortiGate config output for {section_name} with {used_model_name}.",
         )
 
     async def build_interfaces_dhcp_section(state: FortiGateState) -> FortiGateState:
@@ -826,6 +990,51 @@ def build_fortigate_graph(
             f"CLI completeness produced {len(report.get('warnings', []))} warning(s) and {len(report.get('blocking_issues', []))} blocker(s).",
         )
 
+    async def _repair_section_task(
+        state: FortiGateState,
+        task: dict[str, Any],
+        repair_model: ChatOpenAI,
+        repair_model_name: str,
+    ) -> tuple[dict[str, Any], str]:
+        section_name = str(task.get("section_name") or "")
+        existing_section = state.get("config_sections", {}).get(section_name, {})
+        response, used_model_name = await ainvoke_with_context_fallback(
+            repair_model,
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with keys section_name, cli_blocks, objects_defined, references_required, "
+                        "assumptions, requires_human_input, validation_notes, repair_notes. Repair only the requested "
+                        "FortiGate section. Do not rewrite unrelated sections or return full config_artifacts. Preserve "
+                        "unknown real-world values as placeholders and list them in requires_human_input."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "task": task,
+                            "section_name": section_name,
+                            "existing_section": existing_section,
+                            "implementation_intent": _section_intent_slice(state, section_name),
+                            "dependency_context": _section_dependency_context(state, section_name),
+                            "reports": {
+                                "section_validation_report": state.get("section_validation_report", {}),
+                                "cli_completeness_report": state.get("cli_completeness_report", {}),
+                                "validation_report": state.get("validation_report", {}),
+                                "standards_report": state.get("standards_report", {}),
+                                "risk_report": state.get("risk_report", {}),
+                            },
+                            "standards": _section_standards_payload(state, section_name),
+                        },
+                        indent=2,
+                    )
+                ),
+            ],
+            repair_model_name,
+        )
+        data = _extract_json_object(str(response.content))
+        return _normalize_section(section_name, data), used_model_name
+
     async def autonomous_repair_config_artifacts(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         iteration = int(state.get("autonomous_repair_iterations", 0) or 0) + 1
@@ -833,87 +1042,79 @@ def build_fortigate_graph(
         repair_model_name = autonomous_repair_model_name or getattr(model, "model_name", "configured-model")
         report = state.get("judge_report", {})
         auto_fixable, requires_human = _classify_judge_items(report)
-        local_findings = [
-            *state.get("section_validation_report", {}).get("blocking_issues", []),
-            *state.get("section_validation_report", {}).get("warnings", []),
-            *state.get("cli_completeness_report", {}).get("blocking_issues", []),
-            *state.get("cli_completeness_report", {}).get("warnings", []),
-            *state.get("validation_report", {}).get("blocking_issues", []),
-            *state.get("validation_report", {}).get("warnings", []),
-            *state.get("standards_report", {}).get("warnings", []),
-            *state.get("risk_report", {}).get("warnings", []),
+        tasks = _plan_repair_tasks(state)
+        model_tasks = [task for task in tasks if task.get("requires_model")][:4]
+        deterministic_human_inputs = [
+            item
+            for task in tasks
+            if not task.get("requires_model")
+            for item in _as_list(task.get("requires_human_input"))
         ]
-        response = await repair_model.ainvoke(
-            [
-                SystemMessage(
-                    content=(
-                        "Return only JSON with keys config_artifacts, auto_fixed_items, requires_human_input. Perform an "
-                        "autonomous FortiGate config repair pass. Fix only engineering issues that do not require real site "
-                        "values or business decisions: syntax, DHCP sections, SD-WAN health checks/services/routes, missing "
-                        "objects/profiles/pools, missing logging, policy matrix mismatches, and explicit deny/segmentation gaps. "
-                        "Do not invent public IPs, PSKs, passwords, syslog/SNMP/DNS targets, or admin source ranges; list those "
-                        "under requires_human_input. Preserve full CLI context, safety labels, rollback plan, and standards citations."
-                    )
-                ),
-                HumanMessage(
-                    content=json.dumps(
-                        {
-                            "iteration": iteration,
-                            "intake": state.get("intake", {}),
-                            "implementation_intent": state.get("implementation_intent", {}),
-                            "config_sections": state.get("config_sections", {}),
-                            "section_validation_report": state.get("section_validation_report", {}),
-                            "current_config_artifacts": state.get("config_artifacts", {}),
-                            "local_findings": local_findings,
-                            "judge_report": report,
-                            "auto_fixable_judge_items": auto_fixable,
-                            "requires_human_judge_items": requires_human,
-                            "repair_model": repair_model_name,
-                            "standards": _standards_payload(state.get("standards", [])),
-                        },
-                        indent=2,
-                    )
-                ),
+        repaired_sections: dict[str, dict[str, Any]] = {}
+        used_models: list[str] = []
+        for task in model_tasks:
+            section_name = str(task.get("section_name") or "")
+            if section_name in repaired_sections:
+                continue
+            section, used_model_name = await _repair_section_task(state, task, repair_model, repair_model_name)
+            if section.get("cli_blocks"):
+                section["repaired_by_model"] = used_model_name
+                repaired_sections[section_name] = section
+                used_models.append(used_model_name)
+        if repaired_sections:
+            sections, artifacts = _merge_repaired_sections(state, repaired_sections)
+            repaired_notes = [
+                f"{task.get('section_name')}: {task.get('finding')}"
+                for task in model_tasks
+                if task.get("section_name") in repaired_sections
             ]
-        )
-        data = _extract_json_object(str(response.content))
-        artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
-        fixed = [str(item) for item in _as_list(data.get("auto_fixed_items"))]
-        human = [str(item) for item in _as_list(data.get("requires_human_input"))]
-        if artifacts.get("cli_config"):
-            artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
             return _trace_update(
                 state,
                 {
+                    "config_sections": sections,
                     "config_artifacts": artifacts,
                     "autonomous_repair_iterations": iteration,
-                    "auto_fixed_items": [*state.get("auto_fixed_items", []), *(fixed or auto_fixable or local_findings)],
-                    "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *requires_human, *human])),
+                    "autonomous_repair_tasks": tasks,
+                    "auto_fixed_items": [*state.get("auto_fixed_items", []), *(repaired_notes or auto_fixable)],
+                    "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *requires_human, *deterministic_human_inputs])),
                 },
                 "autonomous_repair_config_artifacts",
                 started_at,
                 started_perf,
-                f"Autonomous repair pass {iteration} updated config artifacts with {repair_model_name}.",
-                branch="repaired",
+                f"Autonomous repair pass {iteration} repaired {len(repaired_sections)} section task(s).",
+                branch=",".join(sorted(set(used_models))) or repair_model_name,
             )
+        human_inputs = [
+            *requires_human,
+            *deterministic_human_inputs,
+            *[
+                item
+                for task in tasks
+                for item in _as_list(task.get("requires_human_input"))
+                if item not in deterministic_human_inputs
+            ],
+        ]
         return _trace_update(
             state,
             {
                 "autonomous_repair_iterations": iteration,
-                "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *requires_human, *human])),
+                "autonomous_repair_tasks": tasks,
+                "auto_fixed_items": [*state.get("auto_fixed_items", []), *auto_fixable],
+                "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *human_inputs])),
             },
             "autonomous_repair_config_artifacts",
             started_at,
             started_perf,
-            f"Autonomous repair pass {iteration} returned no structured config update.",
-            branch="no-op",
+            f"Autonomous repair pass {iteration} planned {len(tasks)} task(s); no model section rewrite was required.",
+            branch="deterministic" if tasks else "no-op",
         )
 
     async def builder_review_config_artifacts(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         reviewer = builder_review_model or model
         reviewer_name = builder_review_model_name or getattr(model, "model_name", "configured-model")
-        response = await reviewer.ainvoke(
+        response, used_model_name = await ainvoke_with_context_fallback(
+            reviewer,
             [
                 SystemMessage(
                     content=(
@@ -949,14 +1150,16 @@ def build_fortigate_graph(
                     )
                 ),
             ]
+            ,
+            reviewer_name,
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
         review = data.get("config_builder_review") if isinstance(data.get("config_builder_review"), dict) else {}
         if artifacts.get("cli_config"):
             artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
-            artifacts["builder_reviewed_by_model"] = reviewer_name
-            review.setdefault("model", reviewer_name)
+            artifacts["builder_reviewed_by_model"] = used_model_name
+            review.setdefault("model", used_model_name)
             review.setdefault("mode", normalized_builder_review_mode)
             return _trace_update(
                 state,
@@ -965,7 +1168,7 @@ def build_fortigate_graph(
                 started_at,
                 started_perf,
                 "Builder model thoroughly reviewed and refactored draft config artifacts.",
-                branch=reviewer_name,
+                branch=used_model_name,
             )
         return _trace_update(
             state,
@@ -981,7 +1184,8 @@ def build_fortigate_graph(
         started_at, started_perf = _trace_start()
         refiner = config_refiner_model or judge_model or model
         refiner_name = config_refiner_model_name or judge_model_name or getattr(model, "model_name", "configured-model")
-        response = await refiner.ainvoke(
+        response, used_model_name = await ainvoke_with_context_fallback(
+            refiner,
             [
                 SystemMessage(
                     content=(
@@ -1015,14 +1219,16 @@ def build_fortigate_graph(
                     )
                 ),
             ]
+            ,
+            refiner_name,
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
         refinement = data.get("config_refinement") if isinstance(data.get("config_refinement"), dict) else {}
         if artifacts.get("cli_config"):
             artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
-            artifacts["refined_by_model"] = refiner_name
-            refinement.setdefault("model", refiner_name)
+            artifacts["refined_by_model"] = used_model_name
+            refinement.setdefault("model", used_model_name)
             refinement.setdefault("mode", normalized_refinement_mode)
             return _trace_update(
                 state,
@@ -1031,7 +1237,7 @@ def build_fortigate_graph(
                 started_at,
                 started_perf,
                 "Refined draft config artifacts before judge review.",
-                branch=refiner_name,
+                branch=used_model_name,
             )
         return _trace_update(
             state,
@@ -1067,7 +1273,15 @@ def build_fortigate_graph(
             "requires_human_input": state.get("requires_human_input", []),
             "standards": _standards_payload(state.get("standards", [])),
         }
-        report = await run_frontier_judge(judge_model or model, packet, judge_model_name=judge_model_name or getattr(model, "model_name", "configured-model"))
+        active_judge = judge_model or model
+        active_judge_name = judge_model_name or getattr(model, "model_name", "configured-model")
+        try:
+            report = await run_frontier_judge(active_judge, packet, judge_model_name=active_judge_name)
+        except Exception as exc:
+            if context_fallback_model is None or not _is_context_window_error(exc):
+                raise
+            fallback_name = context_fallback_model_name or getattr(context_fallback_model, "model_name", "context-fallback-model")
+            report = await run_frontier_judge(context_fallback_model, packet, judge_model_name=fallback_name)
         _, requires_human = _classify_judge_items(report.model_dump())
         return _trace_update(
             state,
@@ -1088,36 +1302,33 @@ def build_fortigate_graph(
             return "builder_review"
         if normalized_refinement_mode == "pre_judge" and not state.get("config_refinement"):
             return "refine"
-        cli_report = state.get("cli_completeness_report", {})
-        section_report = state.get("section_validation_report", {})
-        cli_findings = [
-            *section_report.get("blocking_issues", []),
-            *section_report.get("warnings", []),
-            *cli_report.get("blocking_issues", []),
-            *cli_report.get("warnings", []),
-        ]
-        if cli_findings and int(state.get("autonomous_repair_iterations", 0) or 0) < autonomous_repair_limit:
+        repair_tasks = _plan_repair_tasks(state)
+        if repair_tasks and int(state.get("autonomous_repair_iterations", 0) or 0) < autonomous_repair_limit:
             return "autonomous_repair"
         return "judge"
 
     async def revise_after_judge(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, used_model_name = await ainvoke_with_context_fallback(
+            model,
             [
                 SystemMessage(content="Return only JSON with key config_artifacts. Revise the draft FortiGate artifacts to address the judge report while preserving safety labels and standards citations."),
                 HumanMessage(content=json.dumps({"config_artifacts": state.get("config_artifacts", {}), "judge_report": state.get("judge_report", {}), "standards": _standards_payload(state.get("standards", []))}, indent=2)),
             ]
+            ,
+            getattr(model, "model_name", "configured-model"),
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data
         if artifacts:
             artifacts.setdefault("safety_label", "DRAFT ONLY - NOT APPLIED TO DEVICE")
-            return _trace_update(state, {"config_artifacts": artifacts}, "revise_after_judge", started_at, started_perf, "Revised artifacts after judge feedback.")
+            return _trace_update(state, {"config_artifacts": artifacts}, "revise_after_judge", started_at, started_perf, f"Revised artifacts after judge feedback with {used_model_name}.")
         return _trace_update(state, {}, "revise_after_judge", started_at, started_perf, "No structured revision returned; kept prior artifacts.", branch="no-op")
 
     async def regenerate_config_after_judge(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, used_model_name = await ainvoke_with_context_fallback(
+            model,
             [
                 SystemMessage(
                     content=(
@@ -1145,6 +1356,8 @@ def build_fortigate_graph(
                     )
                 ),
             ]
+            ,
+            getattr(model, "model_name", "configured-model"),
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data
@@ -1156,7 +1369,7 @@ def build_fortigate_graph(
                 "regenerate_config_after_judge",
                 started_at,
                 started_perf,
-                "Regenerated config artifacts from scratch after broad judge feedback.",
+                f"Regenerated config artifacts from scratch after broad judge feedback with {used_model_name}.",
                 branch="regenerated",
             )
         return _trace_update(state, {}, "regenerate_config_after_judge", started_at, started_perf, "No structured regeneration returned; kept prior artifacts.", branch="no-op")
