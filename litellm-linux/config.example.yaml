@@ -14,6 +14,23 @@ model_list:
       model: openrouter/qwen/qwen3.7-max
       api_base: os.environ/OPENROUTER_API_BASE
       api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: anthropic-sonnet-4.6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: anthropic-opus-4.8
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+      additional_drop_params: ["temperature", "top_p", "top_k"]
+  - model_name: xai-grok-build-0.1
+    litellm_params:
+      model: xai/grok-build-0.1
+      api_key: os.environ/XAI_API_KEY
+  - model_name: xai-grok-4.3
+    litellm_params:
+      model: xai/grok-4.3
+      api_key: os.environ/XAI_API_KEY
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
