@@ -2242,6 +2242,37 @@ def _normalize_critical_status(value: Any) -> str:
     return status if status in {"missing", "partial", "complete"} else "missing"
 
 
+def _network_design_field_alias(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _guided_intake_field_updates(request: NetworkDesignRequest) -> dict[str, dict[str, Any]]:
+    aliases: dict[str, str] = {}
+    for spec in NETWORK_DESIGN_CRITICAL_FIELDS:
+        aliases[_network_design_field_alias(spec["field"])] = spec["field"]
+        aliases[_network_design_field_alias(spec["label"])] = spec["field"]
+
+    updates: dict[str, dict[str, Any]] = {}
+    for message in request.messages:
+        if message.role != "user":
+            continue
+        for raw_line in message.content.splitlines():
+            line = raw_line.strip().lstrip("-*").strip()
+            if ":" not in line:
+                continue
+            label, _, answer = line.partition(":")
+            field = aliases.get(_network_design_field_alias(label))
+            summary = answer.strip()
+            if not field or not summary:
+                continue
+            updates[field] = {
+                "status": "complete",
+                "summary": summary[:500],
+                "evidence": [line[:500]],
+            }
+    return updates
+
+
 def _normalize_network_design_readiness(
     request: NetworkDesignRequest,
     structured_intake: dict[str, Any],
@@ -2249,7 +2280,10 @@ def _normalize_network_design_readiness(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     structured = structured_intake if isinstance(structured_intake, dict) else {}
     readiness = readiness_report if isinstance(readiness_report, dict) else {}
-    raw_fields = structured.get("critical_fields") if isinstance(structured.get("critical_fields"), dict) else {}
+    structured_fields = structured.get("critical_fields") if isinstance(structured.get("critical_fields"), dict) else {}
+    readiness_fields = readiness.get("critical_fields") if isinstance(readiness.get("critical_fields"), dict) else {}
+    guided_fields = _guided_intake_field_updates(request)
+    raw_fields = {**readiness_fields, **structured_fields, **guided_fields}
     critical_fields: dict[str, dict[str, Any]] = {}
 
     for spec in NETWORK_DESIGN_CRITICAL_FIELDS:
