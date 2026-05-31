@@ -490,6 +490,50 @@
       return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
     }
 
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function readJsonResponse(response) {
+      const text = await response.text();
+      try {
+        return text ? JSON.parse(text) : {};
+      } catch {
+        return { detail: text.slice(0, 500) || response.statusText };
+      }
+    }
+
+    async function startFortiGateDesignJob(payload, onUpdate) {
+      const startResponse = await fetch(`${apiBase}/fortigate/design/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      let job = await readJsonResponse(startResponse);
+      if (!startResponse.ok) {
+        throw new Error(job.detail || startResponse.statusText);
+      }
+      onUpdate?.(job);
+      while (["queued", "running"].includes(job.status)) {
+        await sleep(3000);
+        const statusResponse = await fetch(`${apiBase}/fortigate/design/jobs/${job.job_id}`);
+        job = await readJsonResponse(statusResponse);
+        if (!statusResponse.ok) {
+          throw new Error(job.detail || statusResponse.statusText);
+        }
+        onUpdate?.(job);
+      }
+      if (job.status !== "completed" || !job.run_id) {
+        throw new Error(job.error || `FortiGate design job ended with status ${job.status}`);
+      }
+      const runResponse = await fetch(`${apiBase}/fortigate/runs/${job.run_id}`);
+      const run = await readJsonResponse(runResponse);
+      if (!runResponse.ok) {
+        throw new Error(run.detail || runResponse.statusText);
+      }
+      return { job, run };
+    }
+
     document.getElementById("config-file").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;
@@ -527,25 +571,21 @@
       }
       const button = document.getElementById("run-design");
       button.disabled = true;
-      statusEl.textContent = "Generating FortiGate artifact package...";
+      statusEl.textContent = "Starting FortiGate artifact job...";
       try {
-        const response = await fetch(`${apiBase}/fortigate/design`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const { job, run } = await startFortiGateDesignJob(
+          {
             intake: intake(),
             existing_config: document.getElementById("existing-config").value,
             thread_id: document.getElementById("thread-id").value || undefined
-          })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          statusEl.textContent = `Error: ${data.detail || response.statusText}`;
-          rawEl.textContent = JSON.stringify(data, null, 2);
-          return;
-        }
-        renderRun(data);
-        statusEl.textContent = `Draft package generated: ${data.run_id}`;
+          },
+          (job) => {
+            statusEl.textContent = `FortiGate job ${job.status}: ${job.job_id}`;
+            rawEl.textContent = JSON.stringify(job, null, 2);
+          }
+        );
+        renderRun(run);
+        statusEl.textContent = `Draft package generated: ${run.run_id} from job ${job.job_id}`;
       } catch (error) {
         statusEl.textContent = `Browser error: ${error.message}`;
         rawEl.textContent = String(error.stack || error);

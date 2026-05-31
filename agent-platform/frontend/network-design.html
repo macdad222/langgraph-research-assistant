@@ -220,6 +220,13 @@
     .mini-summary { display: grid; gap: 8px; }
     .mini-row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid rgba(148, 163, 184, .12); padding-bottom: 6px; color: var(--muted); font-size: 13px; }
     .mini-row strong { color: var(--text); }
+    .readiness-list {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
     details summary { cursor: pointer; color: #dbeafe; font-weight: 750; margin-bottom: 10px; }
     .card {
       border: 1px solid rgba(148, 163, 184, .20);
@@ -382,7 +389,16 @@
       </div>
 
       <div class="step-card">
-        <div class="step-title"><span class="step-number">2</span><span>Build the design package</span></div>
+        <div class="step-title"><span class="step-number">2</span><span>Intake readiness</span></div>
+        <div class="pills">
+          <span id="readiness-pill" class="pill warn">Readiness: 0%</span>
+        </div>
+        <p id="next-question" class="status">Chat with the assistant to collect the first required detail.</p>
+        <ul id="missing-fields" class="readiness-list"></ul>
+      </div>
+
+      <div class="step-card">
+        <div class="step-title"><span class="step-number">3</span><span>Build the design package</span></div>
         <p class="status">Use this after the chat has enough requirements. The package includes standards evidence and a FortiGate handoff.</p>
         <div class="action-stack">
           <button id="run-design">Generate Design Package</button>
@@ -393,7 +409,7 @@
       </div>
 
       <div class="step-card">
-        <div class="step-title"><span class="step-number">3</span><span>Create FortiGate config</span></div>
+        <div class="step-title"><span class="step-number">4</span><span>Create FortiGate config</span></div>
         <p class="status">This sends the handoff to the FortiGate agent and Qwen judge. It remains draft-only.</p>
         <div class="action-stack">
           <button id="generate-config" disabled>Generate FortiGate Config</button>
@@ -403,7 +419,7 @@
       </div>
 
       <div class="step-card">
-        <div class="step-title"><span class="step-number">4</span><span>Download files</span></div>
+        <div class="step-title"><span class="step-number">5</span><span>Download files</span></div>
         <div class="action-stack">
           <button id="download-design" class="secondary" disabled>Download Design .md</button>
           <button id="download-config" class="secondary" disabled>Download Config .conf</button>
@@ -414,7 +430,7 @@
       </div>
 
       <div class="step-card">
-        <div class="step-title"><span class="step-number">5</span><span>Status</span></div>
+        <div class="step-title"><span class="step-number">6</span><span>Status</span></div>
         <div class="pills">
           <span id="status-pill" class="pill">Status: n/a</span>
           <span id="standards-pill" class="pill">Standards: n/a</span>
@@ -449,6 +465,8 @@
     let currentHandoff = null;
     let currentRun = null;
     let currentFortiGateRun = null;
+    let currentStructuredIntake = {};
+    let currentReadinessReport = {};
 
     const statusEl = document.getElementById("status");
     const exportStatusEl = document.getElementById("export-status");
@@ -472,6 +490,81 @@
       return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
     }
 
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function readJsonResponse(response) {
+      const text = await response.text();
+      try {
+        return text ? JSON.parse(text) : {};
+      } catch {
+        return { detail: text.slice(0, 500) || response.statusText };
+      }
+    }
+
+    async function startFortiGateDesignJob(payload, onUpdate) {
+      const startResponse = await fetch(`${apiBase}/fortigate/design/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      let job = await readJsonResponse(startResponse);
+      if (!startResponse.ok) {
+        throw new Error(job.detail || startResponse.statusText);
+      }
+      onUpdate?.(job);
+      while (["queued", "running"].includes(job.status)) {
+        await sleep(3000);
+        const statusResponse = await fetch(`${apiBase}/fortigate/design/jobs/${job.job_id}`);
+        job = await readJsonResponse(statusResponse);
+        if (!statusResponse.ok) {
+          throw new Error(job.detail || statusResponse.statusText);
+        }
+        onUpdate?.(job);
+      }
+      if (job.status !== "completed" || !job.run_id) {
+        throw new Error(job.error || `FortiGate design job ended with status ${job.status}`);
+      }
+      const runResponse = await fetch(`${apiBase}/fortigate/runs/${job.run_id}`);
+      const run = await readJsonResponse(runResponse);
+      if (!runResponse.ok) {
+        throw new Error(run.detail || runResponse.statusText);
+      }
+      return { job, run };
+    }
+
+    async function startNetworkDesignJob(payload, onUpdate) {
+      const startResponse = await fetch(`${apiBase}/network-design/chat/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      let job = await readJsonResponse(startResponse);
+      if (!startResponse.ok) {
+        throw new Error(job.detail || startResponse.statusText);
+      }
+      onUpdate?.(job);
+      while (["queued", "running"].includes(job.status)) {
+        await sleep(3000);
+        const statusResponse = await fetch(`${apiBase}/network-design/chat/jobs/${job.job_id}`);
+        job = await readJsonResponse(statusResponse);
+        if (!statusResponse.ok) {
+          throw new Error(job.detail || statusResponse.statusText);
+        }
+        onUpdate?.(job);
+      }
+      if (job.status !== "completed" || !job.run_id) {
+        throw new Error(job.error || `Network design job ended with status ${job.status}`);
+      }
+      const runResponse = await fetch(`${apiBase}/network-design/runs/${job.run_id}`);
+      const run = await readJsonResponse(runResponse);
+      if (!runResponse.ok) {
+        throw new Error(run.detail || runResponse.statusText);
+      }
+      return { job, run };
+    }
+
     function intake() {
       return {
         customer_name: document.getElementById("customer").value,
@@ -482,6 +575,40 @@
         preferred_fortigate_model: document.getElementById("model").value,
         fortios_version: document.getElementById("fortios").value
       };
+    }
+
+    function readinessPercent() {
+      const score = Number(currentReadinessReport?.readiness_score || 0);
+      return Math.max(0, Math.min(100, Math.round(score * 100)));
+    }
+
+    function missingFieldLabels() {
+      const fields = currentReadinessReport?.critical_fields || {};
+      return (currentReadinessReport?.missing_critical_fields || []).map((field) => fields[field]?.label || field);
+    }
+
+    function updateReadinessUi() {
+      const pill = document.getElementById("readiness-pill");
+      const nextQuestion = document.getElementById("next-question");
+      const missingFields = document.getElementById("missing-fields");
+      const ready = Boolean(currentReadinessReport?.ready_for_package);
+      const percent = readinessPercent();
+      pill.textContent = `Readiness: ${percent}%`;
+      pill.className = `pill ${ready ? "ok" : "warn"}`;
+      nextQuestion.textContent = ready
+        ? "Required intake is complete. You can generate the design package."
+        : (currentReadinessReport?.next_question || "Chat with the assistant to collect the next required detail.");
+      const labels = missingFieldLabels();
+      missingFields.innerHTML = labels.length
+        ? labels.map((label) => `<li>${escapeHtml(label)}</li>`).join("")
+        : "";
+      document.getElementById("run-design").disabled = !ready;
+    }
+
+    function readinessBlockMessage() {
+      const labels = missingFieldLabels();
+      const question = currentReadinessReport?.next_question || "Please continue the chat to complete the required intake details.";
+      return `Package generation is blocked until intake is complete.${labels.length ? ` Missing: ${labels.join(", ")}.` : ""} Next question: ${question}`;
     }
 
     function slug(value) {
@@ -857,6 +984,8 @@
           body: JSON.stringify({
             intake: intake(),
             messages,
+            structured_intake: currentStructuredIntake,
+            readiness_report: currentReadinessReport,
             thread_id: document.getElementById("thread-id").value || undefined
           })
         });
@@ -866,6 +995,9 @@
           rawEl.textContent = JSON.stringify(data, null, 2);
           return false;
         }
+        currentStructuredIntake = data.structured_intake || currentStructuredIntake || {};
+        currentReadinessReport = data.readiness_report || {};
+        updateReadinessUi();
         messages.push(data.message);
         renderMessages();
         document.getElementById("standards-pill").textContent = `Standards: ${(data.standards || []).length}`;
@@ -886,6 +1018,9 @@
       currentFortiGateRun = null;
       currentMarkdown = run.markdown || "";
       currentHandoff = run.fortigate_handoff || null;
+      currentStructuredIntake = run.structured_intake || currentStructuredIntake || {};
+      currentReadinessReport = run.readiness_report || currentReadinessReport || {};
+      updateReadinessUi();
       copyMarkdown.disabled = !currentMarkdown;
       copyHandoff.disabled = !currentHandoff;
       generateConfigButton.disabled = !currentHandoff;
@@ -973,32 +1108,36 @@
         statusEl.textContent = "Design goal is required.";
         return;
       }
+      if (!currentReadinessReport?.ready_for_package) {
+        statusEl.textContent = readinessBlockMessage();
+        rawEl.textContent = JSON.stringify({ readiness_report: currentReadinessReport }, null, 2);
+        updateReadinessUi();
+        return;
+      }
       const button = document.getElementById("run-design");
       button.disabled = true;
-      statusEl.textContent = "Generating network design package...";
+      statusEl.textContent = "Starting network design package job...";
       try {
-        const response = await fetch(`${apiBase}/network-design/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const { job, run } = await startNetworkDesignJob(
+          {
             intake: intake(),
             messages,
+            structured_intake: currentStructuredIntake,
+            readiness_report: currentReadinessReport,
             thread_id: document.getElementById("thread-id").value || undefined
-          })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          statusEl.textContent = `Error: ${data.detail || response.statusText}`;
-          rawEl.textContent = JSON.stringify(data, null, 2);
-          return;
-        }
-        renderRun(data);
-        statusEl.textContent = `Network design package generated: ${data.run_id}`;
+          },
+          (job) => {
+            statusEl.textContent = `Network design job ${job.status}: ${job.job_id}`;
+            rawEl.textContent = JSON.stringify(job, null, 2);
+          }
+        );
+        renderRun(run);
+        statusEl.textContent = `Network design package generated: ${run.run_id} from job ${job.job_id}`;
       } catch (error) {
         statusEl.textContent = `Browser error: ${error.message}`;
         rawEl.textContent = String(error.stack || error);
       } finally {
-        button.disabled = false;
+        button.disabled = !currentReadinessReport?.ready_for_package;
       }
     });
 
@@ -1047,6 +1186,9 @@
       currentHandoff = null;
       currentRun = null;
       currentFortiGateRun = null;
+      currentStructuredIntake = {};
+      currentReadinessReport = {};
+      updateReadinessUi();
       copyMarkdown.disabled = true;
       copyHandoff.disabled = true;
       generateConfigButton.disabled = true;
@@ -1084,27 +1226,24 @@
       generateConfigButton.disabled = true;
       generateConfigButton.textContent = "Generating...";
       configReadyEl.textContent = "generating";
-      exportStatusEl.textContent = "Generating FortiGate configuration artifact and running the judge. This can take 1-2 minutes.";
-      statusEl.textContent = "FortiGate generation is running. Please wait for the Qwen judge pass to finish.";
+      exportStatusEl.textContent = "Starting FortiGate configuration artifact job and Qwen judge pass.";
+      statusEl.textContent = "FortiGate generation job is starting.";
       try {
-        const response = await fetch(`${apiBase}/fortigate/design`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const { job, run } = await startFortiGateDesignJob(
+          {
             intake: currentHandoff,
             existing_config: "",
             thread_id: `${currentRun?.thread_id || "network-design"}-${Date.now()}-fortigate-export`,
             mode: "artifact"
-          })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          exportStatusEl.textContent = `Error: ${data.detail || response.statusText}`;
-          statusEl.textContent = "FortiGate generation failed. See Raw Response for details.";
-          rawEl.textContent = JSON.stringify(data, null, 2);
-          return;
-        }
-        renderFortiGateRun(data);
+          },
+          (job) => {
+            exportStatusEl.textContent = `FortiGate job ${job.status}: ${job.job_id}`;
+            statusEl.textContent = "FortiGate generation is running in the background. This page is polling for completion.";
+            rawEl.textContent = JSON.stringify(job, null, 2);
+          }
+        );
+        renderFortiGateRun(run);
+        exportStatusEl.textContent = `FortiGate config generated: ${run.run_id} from job ${job.job_id}`;
       } catch (error) {
         exportStatusEl.textContent = `Browser error: ${error.message}`;
         statusEl.textContent = "Browser error while generating FortiGate config.";
@@ -1176,6 +1315,7 @@
     downloadJsonButton.addEventListener("click", () => {
       downloadText(`${fileBase()}-run.json`, JSON.stringify({ network_design_run: currentRun, fortigate_run: currentFortiGateRun }, null, 2), "application/json");
     });
+    updateReadinessUi();
   </script>
 </body>
 </html>

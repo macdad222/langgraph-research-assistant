@@ -22,8 +22,28 @@ class NetworkDesignIntake(BaseModel):
 
 class NetworkDesignRequest(BaseModel):
     intake: NetworkDesignIntake
+    structured_intake: dict[str, Any] = Field(default_factory=dict)
+    readiness_report: dict[str, Any] = Field(default_factory=dict)
     messages: list[NetworkDesignMessage] = Field(default_factory=list)
     thread_id: Optional[str] = None
+
+
+class NetworkDesignCriticalField(BaseModel):
+    field: str
+    label: str
+    status: str = Field(default="missing", pattern="^(missing|partial|complete)$")
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    question: str = ""
+
+
+class NetworkDesignReadinessReport(BaseModel):
+    readiness_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    ready_for_package: bool = False
+    missing_critical_fields: list[str] = Field(default_factory=list)
+    next_question: str = ""
+    critical_fields: dict[str, NetworkDesignCriticalField] = Field(default_factory=dict)
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class NetworkDesignChatResponse(BaseModel):
@@ -31,6 +51,8 @@ class NetworkDesignChatResponse(BaseModel):
     model: str
     message: NetworkDesignMessage
     standards: list[FortiGateStandardChunk] = Field(default_factory=list)
+    structured_intake: dict[str, Any] = Field(default_factory=dict)
+    readiness_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class NetworkDesignValidationReport(BaseModel):
@@ -93,6 +115,16 @@ class NetworkDesignRunSummary(BaseModel):
     validation_passed: bool
 
 
+class NetworkDesignJobResponse(BaseModel):
+    job_id: str
+    thread_id: str
+    status: str = Field(default="queued", pattern="^(queued|running|completed|failed|cancelled)$")
+    created_at: str
+    updated_at: str
+    run_id: Optional[str] = None
+    error: str = ""
+
+
 class NetworkDesignRunResponse(BaseModel):
     run_id: str
     created_at: str
@@ -100,6 +132,8 @@ class NetworkDesignRunResponse(BaseModel):
     model: str
     status: str
     intake: NetworkDesignIntake
+    structured_intake: dict[str, Any] = Field(default_factory=dict)
+    readiness_report: dict[str, Any] = Field(default_factory=dict)
     messages: list[NetworkDesignMessage] = Field(default_factory=list)
     standards: list[FortiGateStandardChunk] = Field(default_factory=list)
     standard_requirements: list[StandardRequirement] = Field(default_factory=list)

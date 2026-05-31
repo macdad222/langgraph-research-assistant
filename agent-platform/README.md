@@ -203,7 +203,37 @@ intake_request
 
 The graph now builds an `implementation_intent` contract before CLI generation. That contract covers VLANs, DHCP decisions, SD-WAN behavior, FortiSwitch, WiFi, object inventory, and the firewall policy matrix. Deterministic completeness gates check both the intent and generated CLI before Qwen judge review.
 
-Set `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true` to use the section-by-section initial build. In that mode, Gemma builds dedicated sections for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies, then Python merges the sections into the standard `config_artifacts` package. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=1.0` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. The builder review, autonomous repair, Qwen refiner, and Qwen judge calls use vLLM template thinking via `chat_template_kwargs.enable_thinking=true`; reasoning traces are not saved or rendered. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model. Set `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT=2` to control how many autonomous repair passes can run before the system asks for human review.
+Set `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true` to use the section-by-section initial build. In that mode, Gemma builds dedicated sections for interfaces/DHCP, FortiSwitch, WiFi, SD-WAN/routing, objects/services, and firewall policies, then Python merges the sections into the standard `config_artifacts` package. Set `FORTIGATE_BUILDER_REVIEW_MODE=off` to skip the builder self-review pass. Set `FORTIGATE_BUILDER_REVIEW_TEMPERATURE=1.0` or another value to tune how aggressively that pass explores network, firewall policy, and security improvements. The builder review, autonomous repair, Qwen refiner, and Qwen judge calls use vLLM template thinking via `chat_template_kwargs.enable_thinking=true`; reasoning traces are not saved or rendered. Set `FORTIGATE_CONFIG_REFINEMENT_MODE=off` to skip the pre-judge refinement step, or set `FORTIGATE_CONFIG_REFINER_MODEL_NAME` to test a different refiner model. Set `FORTIGATE_AUTONOMOUS_REPAIR_LIMIT=1` to control how many autonomous repair passes can run before the system asks for human review.
+
+Use model-role profiles to A/B test the Gemma/Qwen split without hand-editing `.env`:
+
+```bash
+scripts/agent-platform model-profile list
+scripts/agent-platform model-profile apply swapped --restart
+scripts/agent-platform model-profile apply openrouter-qwen-builder --restart
+scripts/agent-platform model-profile apply openrouter-grok-judge --restart
+scripts/agent-platform model-profile apply openrouter-frontier --restart
+scripts/agent-platform model-profile apply openrouter-grok-all --restart
+scripts/agent-platform model-profile apply openrouter-qwen3.7-all --restart
+scripts/agent-platform model-profile apply qwen36-gemma-chat --restart
+scripts/agent-platform model-profile apply current --restart
+```
+
+The profile switcher edits approved model-role keys, including Network Design chat/intake/package/handoff model and temperature keys, and writes a timestamped `.env` backup before each change.
+
+Network Design can split model calls by phase:
+
+```env
+NETWORK_CHAT_MODEL_NAME=extl-gemma-4-31b
+NETWORK_INTAKE_MODEL_NAME=extl-gemma-4-31b
+NETWORK_PACKAGE_MODEL_NAME=Qwen3.6-27B
+NETWORK_HANDOFF_MODEL_NAME=Qwen3.6-27B
+NETWORK_CHAT_TEMPERATURE=1.0
+NETWORK_CHAT_ENABLE_THINKING=true
+NETWORK_INTAKE_TEMPERATURE=0.0
+NETWORK_PACKAGE_TEMPERATURE=0.2
+NETWORK_HANDOFF_TEMPERATURE=0.0
+```
 
 ## Human In The Loop
 

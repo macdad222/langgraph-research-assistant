@@ -15,6 +15,8 @@ from app.standards import extract_standard_requirements, search_standards
 
 class NetworkDesignState(TypedDict, total=False):
     intake: dict[str, Any]
+    structured_intake: dict[str, Any]
+    readiness_report: dict[str, Any]
     messages: list[dict[str, Any]]
     standards_query: str
     standards: list[dict[str, Any]]
@@ -217,10 +219,19 @@ def validate_network_design(state: NetworkDesignState) -> NetworkDesignValidatio
     return NetworkDesignValidationReport(passed=not blocking, blocking_issues=blocking, warnings=warnings, checks=checks)
 
 
-def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver):
+def build_network_design_graph(
+    model: ChatOpenAI,
+    checkpointer: AsyncRedisSaver,
+    handoff_model: ChatOpenAI | None = None,
+):
     async def intake_conversation(state: NetworkDesignState) -> NetworkDesignState:
         started_at, started_perf = _trace_start()
         intake = NetworkDesignIntake(**state.get("intake", {})).model_dump()
+        structured_intake = state.get("structured_intake", {})
+        if isinstance(structured_intake, dict):
+            for key, value in structured_intake.get("intake_updates", {}).items():
+                if key in intake and value not in (None, "", [], {}):
+                    intake[key] = value
         messages = [NetworkDesignMessage(**item).model_dump() for item in state.get("messages", [])]
         query = " ".join(
             part
@@ -236,7 +247,13 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
         )
         return _trace_update(
             state,
-            {"intake": intake, "messages": messages, "standards_query": query or "network design fortigate sd-wan firewall standards"},
+            {
+                "intake": intake,
+                "structured_intake": structured_intake if isinstance(structured_intake, dict) else {},
+                "readiness_report": state.get("readiness_report", {}),
+                "messages": messages,
+                "standards_query": query or "network design fortigate sd-wan firewall standards",
+            },
             "intake_conversation",
             started_at,
             started_perf,
@@ -275,6 +292,7 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
                     content=json.dumps(
                         {
                             "intake": state.get("intake", {}),
+                            "structured_intake": state.get("structured_intake", {}),
                             "conversation": state.get("messages", []),
                             "standards": _standards_payload(state.get("standards", [])),
                         },
@@ -321,6 +339,7 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
                     content=json.dumps(
                         {
                             "intake": state.get("intake", {}),
+                            "structured_intake": state.get("structured_intake", {}),
                             "requirements_summary": state.get("requirements_summary", {}),
                             "missing_questions": state.get("missing_questions", []),
                             "standards": _standards_payload(state.get("standards", [])),
@@ -345,7 +364,8 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
 
     async def build_fortigate_handoff(state: NetworkDesignState) -> NetworkDesignState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        mapper = handoff_model or model
+        response = await mapper.ainvoke(
             [
                 SystemMessage(
                     content=(
@@ -359,6 +379,7 @@ def build_network_design_graph(model: ChatOpenAI, checkpointer: AsyncRedisSaver)
                     content=json.dumps(
                         {
                             "intake": state.get("intake", {}),
+                            "structured_intake": state.get("structured_intake", {}),
                             "requirements_summary": state.get("requirements_summary", {}),
                             "design_package": state.get("design_package", {}),
                             "missing_questions": state.get("missing_questions", []),

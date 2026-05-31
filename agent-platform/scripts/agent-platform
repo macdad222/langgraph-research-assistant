@@ -19,6 +19,8 @@ Commands:
   graph      Print the Mermaid graph source
   open       Print browser URLs for the agent UI endpoints
   frontend   Check the research frontend health endpoint
+  model-profile [list|show NAME|apply NAME [--restart]]
+             Apply a FortiGate model-role profile from config/model-profiles
   research QUESTION  Run a structured research request
   chat TEXT         Send a quick test message to LangGraph
   thread ID TEXT    Send a message using a checkpointed thread id
@@ -56,6 +58,113 @@ case "$command" in
   frontend)
     curl -sS http://localhost:8080/health
     echo
+    ;;
+  model-profile)
+    shift || true
+    subcommand="${1:-list}"
+    profiles_dir="$PROJECT_DIR/config/model-profiles"
+    case "$subcommand" in
+      list)
+        if [ -d "$profiles_dir" ]; then
+          for profile in "$profiles_dir"/*.env; do
+            [ -e "$profile" ] || continue
+            basename "$profile" .env
+          done
+        fi
+        ;;
+      show)
+        profile_name="${2:-}"
+        if [ -z "$profile_name" ] || [ ! -f "$profiles_dir/$profile_name.env" ]; then
+          echo "Missing or unknown model profile: ${profile_name:-<empty>}" >&2
+          exit 2
+        fi
+        cat "$profiles_dir/$profile_name.env"
+        ;;
+      apply)
+        profile_name="${2:-}"
+        restart="${3:-}"
+        if [ -z "$profile_name" ] || [ ! -f "$profiles_dir/$profile_name.env" ]; then
+          echo "Missing or unknown model profile: ${profile_name:-<empty>}" >&2
+          exit 2
+        fi
+        python3 - "$PROJECT_DIR/.env" "$profiles_dir/$profile_name.env" <<'PY'
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+import shutil
+import sys
+
+env_path = Path(sys.argv[1])
+profile_path = Path(sys.argv[2])
+allowed_keys = {
+    "MODEL_NAME",
+    "NETWORK_CHAT_MODEL_NAME",
+    "NETWORK_INTAKE_MODEL_NAME",
+    "NETWORK_PACKAGE_MODEL_NAME",
+    "NETWORK_HANDOFF_MODEL_NAME",
+    "MODEL_TEMPERATURE",
+    "NETWORK_CHAT_TEMPERATURE",
+    "NETWORK_CHAT_ENABLE_THINKING",
+    "NETWORK_INTAKE_TEMPERATURE",
+    "NETWORK_PACKAGE_TEMPERATURE",
+    "NETWORK_HANDOFF_TEMPERATURE",
+    "FORTIGATE_JUDGE_MODEL_NAME",
+    "FORTIGATE_BUILDER_REVIEW_MODEL_NAME",
+    "FORTIGATE_CONFIG_REFINER_MODEL_NAME",
+    "FORTIGATE_BUILDER_REVIEW_MODE",
+    "FORTIGATE_CONFIG_REFINEMENT_MODE",
+    "FORTIGATE_BUILDER_REVIEW_TEMPERATURE",
+    "FORTIGATE_AUTONOMOUS_REPAIR_LIMIT",
+}
+
+updates: dict[str, str] = {}
+for raw_line in profile_path.read_text().splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        continue
+    key, separator, value = line.partition("=")
+    if not separator:
+        continue
+    key = key.strip()
+    if key not in allowed_keys:
+        raise SystemExit(f"Profile contains unsupported key: {key}")
+    updates[key] = value.strip()
+
+if not updates:
+    raise SystemExit("Profile did not contain any supported keys.")
+
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+backup_path = env_path.with_name(f"{env_path.name}.bak-{timestamp}")
+shutil.copy2(env_path, backup_path)
+
+lines = env_path.read_text().splitlines()
+seen: set[str] = set()
+for index, line in enumerate(lines):
+    key, separator, _ = line.partition("=")
+    if separator and key in updates:
+        lines[index] = f"{key}={updates[key]}"
+        seen.add(key)
+
+for key, value in updates.items():
+    if key not in seen:
+        lines.append(f"{key}={value}")
+
+env_path.write_text("\n".join(lines) + "\n")
+print(f"Applied {profile_path.stem}; backup saved to {backup_path}")
+PY
+        if [ "$restart" = "--restart" ]; then
+          docker compose up -d --build langgraph-app
+        else
+          echo "Restart langgraph-app for changes to take effect, or rerun with --restart."
+        fi
+        ;;
+      *)
+        echo "Unknown model-profile command: $subcommand" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
     ;;
   open)
     cat <<URLS

@@ -1,12 +1,14 @@
+import asyncio
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -19,6 +21,7 @@ from app.fortigate import build_fortigate_graph, parse_fortigate_config
 from app.fortigate_judge import run_frontier_judge
 from app.fortigate_models import (
     FortiGateConfigSummary,
+    FortiGateDesignJobResponse,
     FortiGateDesignRequest,
     FortiGateHumanReview,
     FortiGateInteractiveResponse,
@@ -39,8 +42,10 @@ from app.network_design import build_network_design_graph
 from app.network_design_models import (
     FortiGateHandoffPayload,
     NetworkDesignChatResponse,
+    NetworkDesignJobResponse,
     NetworkDesignMessage,
     NetworkDesignRequest,
+    NetworkDesignReadinessReport,
     NetworkDesignRunResponse,
     NetworkDesignRunSummary,
     NetworkDesignStandardsSearchResponse,
@@ -437,8 +442,16 @@ def _fortigate_run_path(run_id: str) -> Path:
     return FORTIGATE_RUNS_DIR / f"{_safe_run_id(run_id)}.json"
 
 
+def _fortigate_job_path(job_id: str) -> Path:
+    return FORTIGATE_RUNS_DIR / "jobs" / f"{_safe_run_id(job_id)}.json"
+
+
 def _network_design_run_path(run_id: str) -> Path:
     return NETWORK_DESIGN_RUNS_DIR / f"{_safe_run_id(run_id)}.json"
+
+
+def _network_design_job_path(job_id: str) -> Path:
+    return NETWORK_DESIGN_RUNS_DIR / "jobs" / f"{_safe_run_id(job_id)}.json"
 
 
 def save_research_run(response: ResearchResponse) -> None:
@@ -756,6 +769,41 @@ def fortigate_response_from_state(result: dict[str, Any], thread_id: str, model_
 def save_fortigate_run(response: FortiGateRunResponse) -> None:
     FORTIGATE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     _fortigate_run_path(response.run_id).write_text(response.model_dump_json(indent=2))
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def save_fortigate_design_job(job: FortiGateDesignJobResponse) -> None:
+    path = _fortigate_job_path(job.job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(job.model_dump_json(indent=2))
+
+
+def load_fortigate_design_job(job_id: str) -> FortiGateDesignJobResponse:
+    path = _fortigate_job_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="FortiGate design job not found")
+    return FortiGateDesignJobResponse.model_validate_json(path.read_text())
+
+
+def update_fortigate_design_job(
+    job_id: str,
+    *,
+    status: str,
+    run_id: str | None = None,
+    error: str = "",
+) -> FortiGateDesignJobResponse:
+    job = load_fortigate_design_job(job_id)
+    job.status = status
+    job.updated_at = _utc_now()
+    if run_id is not None:
+        job.run_id = run_id
+    if error:
+        job.error = error
+    save_fortigate_design_job(job)
+    return job
 
 
 def load_fortigate_run(run_id: str) -> FortiGateRunResponse:
@@ -1080,6 +1128,8 @@ def network_design_response_from_state(result: dict[str, Any], thread_id: str, m
         model=model_name,
         status=result.get("status", "needs_design_review"),
         intake=result.get("intake", {}),
+        structured_intake=result.get("structured_intake", {}),
+        readiness_report=result.get("readiness_report", {}),
         messages=result.get("messages", []),
         standards=result.get("standards", []),
         standard_requirements=result.get("standard_requirements", []),
@@ -1098,6 +1148,37 @@ def network_design_response_from_state(result: dict[str, Any], thread_id: str, m
 def save_network_design_run(response: NetworkDesignRunResponse) -> None:
     NETWORK_DESIGN_RUNS_DIR.mkdir(parents=True, exist_ok=True)
     _network_design_run_path(response.run_id).write_text(response.model_dump_json(indent=2))
+
+
+def save_network_design_job(job: NetworkDesignJobResponse) -> None:
+    path = _network_design_job_path(job.job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(job.model_dump_json(indent=2))
+
+
+def load_network_design_job(job_id: str) -> NetworkDesignJobResponse:
+    path = _network_design_job_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Network design job not found")
+    return NetworkDesignJobResponse.model_validate_json(path.read_text())
+
+
+def update_network_design_job(
+    job_id: str,
+    *,
+    status: str,
+    run_id: str | None = None,
+    error: str = "",
+) -> NetworkDesignJobResponse:
+    job = load_network_design_job(job_id)
+    job.status = status
+    job.updated_at = _utc_now()
+    if run_id is not None:
+        job.run_id = run_id
+    if error:
+        job.error = error
+    save_network_design_job(job)
+    return job
 
 
 def load_network_design_run(run_id: str) -> NetworkDesignRunResponse:
@@ -1149,6 +1230,16 @@ def get_float_env(name: str, default: float) -> float:
         return default
 
 
+def get_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return int(float(value))
+    except ValueError:
+        return default
+
+
 def get_bool_env(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -1165,6 +1256,35 @@ def fortigate_model_extra_body(enable_thinking: bool = False, passthrough: bool 
     return body
 
 
+def chat_model_kwargs(extra_body: dict[str, Any] | None = None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "timeout": get_float_env("LITELLM_REQUEST_TIMEOUT_SECONDS", 600.0),
+    }
+    max_tokens = get_int_env("MODEL_MAX_OUTPUT_TOKENS", 32768)
+    if max_tokens > 0:
+        kwargs["max_tokens"] = max_tokens
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    return kwargs
+
+
+def make_chat_model(
+    *,
+    model_name: str,
+    base_url: str,
+    api_key: str,
+    temperature: float,
+    extra_body: dict[str, Any] | None = None,
+) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=temperature,
+        **chat_model_kwargs(extra_body),
+    )
+
+
 def langfuse_enabled() -> bool:
     return all(os.getenv(name) for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"))
 
@@ -1175,25 +1295,70 @@ async def lifespan(app: FastAPI):
     api_key = get_required_env("LITELLM_API_KEY")
     redis_url = get_required_env("REDIS_URL")
     model_name = os.getenv("MODEL_NAME", "gemma-local")
+    network_chat_model_name = os.getenv("NETWORK_CHAT_MODEL_NAME", model_name)
+    network_intake_model_name = os.getenv("NETWORK_INTAKE_MODEL_NAME", network_chat_model_name)
+    network_package_model_name = os.getenv("NETWORK_PACKAGE_MODEL_NAME", model_name)
+    network_handoff_model_name = os.getenv("NETWORK_HANDOFF_MODEL_NAME", network_package_model_name)
+    default_temperature = get_float_env("MODEL_TEMPERATURE", 0.2)
+    network_chat_temperature = get_float_env("NETWORK_CHAT_TEMPERATURE", default_temperature)
+    network_intake_temperature = get_float_env("NETWORK_INTAKE_TEMPERATURE", 0.0)
+    network_package_temperature = get_float_env("NETWORK_PACKAGE_TEMPERATURE", default_temperature)
+    network_handoff_temperature = get_float_env("NETWORK_HANDOFF_TEMPERATURE", 0.0)
+    network_chat_enable_thinking = get_bool_env("NETWORK_CHAT_ENABLE_THINKING", False)
 
-    llm = ChatOpenAI(
-        model=model_name,
+    llm = make_chat_model(
+        model_name=model_name,
         base_url=base_url,
         api_key=api_key,
-        temperature=0.2,
+        temperature=default_temperature,
+    )
+    network_chat_model = make_chat_model(
+        model_name=network_chat_model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=network_chat_temperature,
+        extra_body=fortigate_model_extra_body(enable_thinking=network_chat_enable_thinking),
+    )
+    network_intake_model = make_chat_model(
+        model_name=network_intake_model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=network_intake_temperature,
+    )
+    network_package_model = make_chat_model(
+        model_name=network_package_model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=network_package_temperature,
+    )
+    network_handoff_model = make_chat_model(
+        model_name=network_handoff_model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=network_handoff_temperature,
     )
 
     async with AsyncRedisSaver.from_conn_string(redis_url) as checkpointer:
         await checkpointer.asetup()
         app.state.model_name = model_name
+        app.state.network_chat_model_name = network_chat_model_name
+        app.state.network_intake_model_name = network_intake_model_name
+        app.state.network_package_model_name = network_package_model_name
+        app.state.network_handoff_model_name = network_handoff_model_name
         app.state.fortigate_judge_model_name = os.getenv("FORTIGATE_JUDGE_MODEL_NAME", model_name)
         app.state.fortigate_builder_review_mode = os.getenv("FORTIGATE_BUILDER_REVIEW_MODE", "pre_refine")
         app.state.fortigate_builder_review_model_name = os.getenv("FORTIGATE_BUILDER_REVIEW_MODEL_NAME", model_name)
         app.state.fortigate_builder_review_temperature = get_float_env("FORTIGATE_BUILDER_REVIEW_TEMPERATURE", 1.0)
         app.state.fortigate_config_refinement_mode = os.getenv("FORTIGATE_CONFIG_REFINEMENT_MODE", "pre_judge")
         app.state.fortigate_config_refiner_model_name = os.getenv("FORTIGATE_CONFIG_REFINER_MODEL_NAME", app.state.fortigate_judge_model_name)
-        app.state.fortigate_autonomous_repair_limit = int(get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_LIMIT", 2))
+        app.state.fortigate_autonomous_repair_limit = int(get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_LIMIT", 1))
         app.state.fortigate_sectional_generation_enabled = get_bool_env("FORTIGATE_SECTIONAL_GENERATION_ENABLED", False)
+        app.state.fortigate_design_timeout_seconds = get_float_env("FORTIGATE_DESIGN_TIMEOUT_SECONDS", 1800.0)
+        app.state.fortigate_design_job_semaphore = asyncio.Semaphore(max(1, get_int_env("FORTIGATE_DESIGN_CONCURRENCY", 1)))
+        app.state.fortigate_design_job_tasks = {}
+        app.state.network_design_timeout_seconds = get_float_env("NETWORK_DESIGN_TIMEOUT_SECONDS", 1200.0)
+        app.state.network_design_job_semaphore = asyncio.Semaphore(max(1, get_int_env("NETWORK_DESIGN_CONCURRENCY", 1)))
+        app.state.network_design_job_tasks = {}
         app.state.langfuse = None
         app.state.langfuse_handler = None
         app.state.research_memory = Neo4jResearchMemory.from_env()
@@ -1212,7 +1377,8 @@ async def lifespan(app: FastAPI):
             return await memory.retrieve_context(query, limit=5)
 
         app.state.graph = build_graph(llm, checkpointer)
-        app.state.network_design_chat_model = llm
+        app.state.network_design_chat_model = network_chat_model
+        app.state.network_design_intake_model = network_intake_model
         app.state.fortigate_generation_model = llm
         app.state.research_graph = build_research_graph(llm, checkpointer, memory_retriever=retrieve_research_memory)
         app.state.interactive_research_graph = build_research_graph(
@@ -1226,7 +1392,7 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=0,
-            extra_body=fortigate_model_extra_body(enable_thinking=True, passthrough=True),
+            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True, passthrough=True)),
         )
         app.state.fortigate_judge_model = judge_model
         builder_review_model = ChatOpenAI(
@@ -1234,7 +1400,7 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=app.state.fortigate_builder_review_temperature,
-            extra_body=fortigate_model_extra_body(enable_thinking=True),
+            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True)),
         )
         app.state.fortigate_builder_review_model = builder_review_model
         autonomous_repair_model = ChatOpenAI(
@@ -1242,7 +1408,7 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=0.4,
-            extra_body=fortigate_model_extra_body(enable_thinking=True),
+            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True)),
         )
         app.state.fortigate_autonomous_repair_model = autonomous_repair_model
         refiner_model = judge_model
@@ -1252,7 +1418,7 @@ async def lifespan(app: FastAPI):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=0,
-                extra_body=fortigate_model_extra_body(enable_thinking=True, passthrough=True),
+                **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True, passthrough=True)),
             )
         app.state.fortigate_config_refiner_model = refiner_model
         app.state.fortigate_graph = build_fortigate_graph(
@@ -1289,7 +1455,7 @@ async def lifespan(app: FastAPI):
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
             sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
         )
-        app.state.network_design_graph = build_network_design_graph(llm, checkpointer)
+        app.state.network_design_graph = build_network_design_graph(network_package_model, checkpointer, handoff_model=network_handoff_model)
         try:
             yield
         finally:
@@ -2027,6 +2193,138 @@ def _network_design_standards_payload(standards: list[Any]) -> list[dict[str, An
     ]
 
 
+NETWORK_DESIGN_CRITICAL_FIELDS = [
+    {
+        "field": "site_and_goal",
+        "label": "Site and design goal",
+        "question": "What site are we designing for, and what is the main business goal for this network design?",
+    },
+    {
+        "field": "wan",
+        "label": "WAN circuits and failover intent",
+        "question": "What WAN circuits should we plan for, including provider, bandwidth, addressing type, and primary/backup or load-sharing preference?",
+    },
+    {
+        "field": "lan",
+        "label": "VLANs, subnets, and DHCP",
+        "question": "What VLANs or LAN segments should be included, with subnet, gateway, and DHCP expectations for each?",
+    },
+    {
+        "field": "security",
+        "label": "Security zones and traffic intent",
+        "question": "What security zones are needed, and what traffic should be allowed or blocked between them?",
+    },
+    {
+        "field": "routing_sdwan",
+        "label": "Routing and SD-WAN behavior",
+        "question": "What routing or SD-WAN behavior should we design for, including failover, application steering, static routes, or dynamic routing?",
+    },
+    {
+        "field": "remote_access",
+        "label": "Remote access and VPN",
+        "question": "Do you need remote access or site-to-site VPN, and who or what networks should be allowed to use it?",
+    },
+    {
+        "field": "operations",
+        "label": "Logging, monitoring, change, and rollback",
+        "question": "What logging, monitoring, change window, approval, and rollback expectations should be included?",
+    },
+    {
+        "field": "fortigate_target",
+        "label": "FortiGate model and FortiOS target",
+        "question": "Which FortiGate model and FortiOS version should this design target?",
+    },
+]
+
+
+def _normalize_critical_status(value: Any) -> str:
+    status = str(value or "missing").strip().lower()
+    return status if status in {"missing", "partial", "complete"} else "missing"
+
+
+def _normalize_network_design_readiness(
+    request: NetworkDesignRequest,
+    structured_intake: dict[str, Any],
+    readiness_report: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    structured = structured_intake if isinstance(structured_intake, dict) else {}
+    readiness = readiness_report if isinstance(readiness_report, dict) else {}
+    raw_fields = structured.get("critical_fields") if isinstance(structured.get("critical_fields"), dict) else {}
+    critical_fields: dict[str, dict[str, Any]] = {}
+
+    for spec in NETWORK_DESIGN_CRITICAL_FIELDS:
+        field = spec["field"]
+        raw = raw_fields.get(field) if isinstance(raw_fields.get(field), dict) else {}
+        status = _normalize_critical_status(raw.get("status"))
+        summary = str(raw.get("summary") or "").strip()
+        evidence = [str(item).strip() for item in raw.get("evidence", []) if str(item).strip()] if isinstance(raw.get("evidence"), list) else []
+
+        if field == "site_and_goal" and request.intake.site_name.strip() and request.intake.design_goal.strip():
+            status = "complete"
+            summary = summary or f"{request.intake.site_name}: {request.intake.design_goal}"
+        if field == "fortigate_target" and request.intake.preferred_fortigate_model.strip() and request.intake.fortios_version.strip():
+            status = "complete"
+            summary = summary or f"{request.intake.preferred_fortigate_model} on FortiOS {request.intake.fortios_version}"
+
+        critical_fields[field] = {
+            "field": field,
+            "label": spec["label"],
+            "status": status,
+            "summary": summary,
+            "evidence": evidence[:5],
+            "question": str(raw.get("question") or spec["question"]).strip(),
+        }
+
+    missing = [spec["field"] for spec in NETWORK_DESIGN_CRITICAL_FIELDS if critical_fields[spec["field"]]["status"] != "complete"]
+    next_question = ""
+    if missing:
+        next_question = critical_fields[missing[0]]["question"]
+
+    assumptions = []
+    for source in (structured.get("assumptions"), readiness.get("assumptions")):
+        if isinstance(source, list):
+            assumptions.extend(str(item).strip() for item in source if str(item).strip())
+    assumptions = list(dict.fromkeys(assumptions))[:12]
+    complete_count = len(NETWORK_DESIGN_CRITICAL_FIELDS) - len(missing)
+
+    structured = {
+        **structured,
+        "critical_fields": critical_fields,
+        "assumptions": assumptions,
+        "open_questions": [next_question] if next_question else [],
+    }
+    normalized_readiness = NetworkDesignReadinessReport(
+        readiness_score=round(complete_count / len(NETWORK_DESIGN_CRITICAL_FIELDS), 2),
+        ready_for_package=not missing,
+        missing_critical_fields=missing,
+        next_question=next_question,
+        critical_fields=critical_fields,
+        assumptions=assumptions,
+    ).model_dump()
+    return structured, normalized_readiness
+
+
+def _network_design_gate_detail(readiness_report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "message": "Network design package generation is blocked until the required intake details are complete.",
+        "missing_critical_fields": readiness_report.get("missing_critical_fields", []),
+        "next_question": readiness_report.get("next_question", ""),
+        "readiness_report": readiness_report,
+    }
+
+
+def _ensure_network_design_package_ready(request: NetworkDesignRequest) -> None:
+    structured_intake, readiness_report = _normalize_network_design_readiness(
+        request,
+        request.structured_intake,
+        request.readiness_report,
+    )
+    request.structured_intake = structured_intake
+    request.readiness_report = readiness_report
+    if not readiness_report.get("ready_for_package"):
+        raise HTTPException(status_code=409, detail=_network_design_gate_detail(readiness_report))
+
+
 def _network_design_fallback_reply(request: NetworkDesignRequest, standards: list[Any]) -> str:
     standards_note = ""
     if standards:
@@ -2076,11 +2374,64 @@ def _clean_network_design_reply(text: str) -> str:
     return cleaned or text
 
 
+async def structure_network_design_intake(
+    request: NetworkDesignRequest,
+    assistant_reply: str,
+    standards: list[Any],
+    thread_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    transcript = "\n".join(f"{message.role}: {message.content}" for message in request.messages[-20:])
+    prior = request.structured_intake if isinstance(request.structured_intake, dict) else {}
+    try:
+        response = await app.state.network_design_intake_model.ainvoke(
+            [
+                SystemMessage(
+                    content=(
+                        "Return only JSON with keys structured_intake and readiness_report. "
+                        "Maintain a concise structured state for a FortiGate/network design conversation. "
+                        "structured_intake must include intake_updates, critical_fields, known_requirements, assumptions, constraints, "
+                        "open_questions, and evidence_notes. critical_fields must contain these exact keys: "
+                        "site_and_goal, wan, lan, security, routing_sdwan, remote_access, operations, fortigate_target. "
+                        "Each critical field must include field, label, status, summary, evidence, and question. "
+                        "status must be missing, partial, or complete. intake_updates may only use NetworkDesignIntake keys: "
+                        "customer_name, site_name, design_goal, business_context, constraints, preferred_fortigate_model, "
+                        "fortios_version. readiness_report must include readiness_score from 0 to 1, ready_for_package, "
+                        "missing_critical_fields, next_question, critical_fields, and assumptions. "
+                        "Choose exactly one next_question from the highest-priority missing or partial field. "
+                        "Mark ready_for_package true only when every critical field is complete. Do not invent site-specific values."
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "thread_id": thread_id,
+                            "form_intake": request.intake.model_dump(),
+                            "prior_structured_intake": prior,
+                            "required_field_priority": NETWORK_DESIGN_CRITICAL_FIELDS,
+                            "conversation": transcript,
+                            "assistant_reply": assistant_reply,
+                            "standards": _network_design_standards_payload(standards),
+                        },
+                        indent=2,
+                    )
+                ),
+            ],
+            config=_network_design_config(f"{thread_id}:intake"),
+        )
+        data = _extract_json_object(str(response.content))
+    except Exception:
+        data = {}
+    structured = data.get("structured_intake") if isinstance(data.get("structured_intake"), dict) else prior
+    readiness = data.get("readiness_report") if isinstance(data.get("readiness_report"), dict) else {}
+    return _normalize_network_design_readiness(request, structured or {}, readiness or {})
+
+
 @app.post("/network-design/message", response_model=NetworkDesignChatResponse)
 async def network_design_message(request: NetworkDesignRequest):
     thread_id = request.thread_id or str(uuid4())
     standards = search_standards(_network_design_chat_query(request), limit=8)
     transcript = "\n".join(f"{message.role}: {message.content}" for message in request.messages[-16:])
+    structured_intake, readiness_report = await structure_network_design_intake(request, "", standards, thread_id)
     try:
         result = await app.state.network_design_chat_model.ainvoke(
             [
@@ -2088,10 +2439,13 @@ async def network_design_message(request: NetworkDesignRequest):
                     content=(
                         "You are the Network Design Helper, a standards-aware assistant for network design engineers. "
                         "Keep the conversation focused on network design, site requirements, standards, and FortiGate handoff details. "
-                        "If a message is unrelated, briefly redirect to the network design task without naming unrelated categories. "
-                        "Have a normal conversational back-and-forth. Ask focused follow-up questions when details are missing. "
+                        "Only redirect if the latest user message is clearly unrelated to network design; never tell the user to stay focused when they provide valid network details. "
+                        "Have a normal conversational back-and-forth, but collect required design details one question at a time. "
+                        "If readiness_report.ready_for_package is false, ask exactly the readiness_report.next_question and no other questions. "
+                        "Acknowledge any newly supplied detail briefly before asking the next question. "
                         "Use the provided standards context when relevant, but do not over-cite. Do not claim any device changes were made. "
-                        "When the user seems ready, tell them to generate the design package and FortiGate handoff. "
+                        "Do not tell the user to generate the design package unless readiness_report.ready_for_package is true. "
+                        "When ready_for_package is true, say the intake is complete and they can generate the design package and FortiGate handoff. "
                         "Your response must directly address the current network design request."
                     )
                 ),
@@ -2099,6 +2453,8 @@ async def network_design_message(request: NetworkDesignRequest):
                     content=json.dumps(
                         {
                             "intake": request.intake.model_dump(),
+                            "structured_intake": structured_intake,
+                            "readiness_report": readiness_report,
                             "conversation": transcript,
                             "standards": _network_design_standards_payload(standards),
                         },
@@ -2115,32 +2471,97 @@ async def network_design_message(request: NetworkDesignRequest):
     content = _clean_network_design_reply(str(result.content))
     if _looks_off_topic_network_design(content):
         content = _network_design_fallback_reply(request, standards)
+    if not readiness_report.get("ready_for_package") and readiness_report.get("next_question"):
+        question = str(readiness_report["next_question"]).strip()
+        if question and question.lower() not in content.lower():
+            content = f"{content.rstrip()}\n\n{question}"
     return NetworkDesignChatResponse(
         thread_id=thread_id,
-        model=app.state.model_name,
+        model=getattr(app.state, "network_chat_model_name", app.state.model_name),
         message=NetworkDesignMessage(role="assistant", content=content),
         standards=standards,
+        structured_intake=structured_intake,
+        readiness_report=readiness_report,
     )
 
 
-@app.post("/network-design/chat", response_model=NetworkDesignRunResponse)
-async def network_design_chat(request: NetworkDesignRequest):
-    thread_id = request.thread_id or str(uuid4())
+async def _generate_network_design_run(request: NetworkDesignRequest, thread_id: str) -> NetworkDesignRunResponse:
+    _ensure_network_design_package_ready(request)
+    timeout_seconds = float(getattr(app.state, "network_design_timeout_seconds", 1200.0) or 0)
+    invoke = app.state.network_design_graph.ainvoke(
+        {
+            "intake": request.intake.model_dump(),
+            "structured_intake": request.structured_intake,
+            "readiness_report": request.readiness_report,
+            "messages": [message.model_dump() for message in request.messages],
+        },
+        config=_network_design_config(thread_id),
+    )
     try:
-        result = await app.state.network_design_graph.ainvoke(
-            {
-                "intake": request.intake.model_dump(),
-                "messages": [message.model_dump() for message in request.messages],
-            },
-            config=_network_design_config(thread_id),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        result = await asyncio.wait_for(invoke, timeout=timeout_seconds) if timeout_seconds > 0 else await invoke
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=f"Network design exceeded {int(timeout_seconds)} seconds") from exc
     if app.state.langfuse is not None:
         app.state.langfuse.flush()
-    response = network_design_response_from_state(result, thread_id, app.state.model_name)
+    response = network_design_response_from_state(result, thread_id, app.state.network_package_model_name)
     save_network_design_run(response)
     return response
+
+
+async def _run_network_design_job(job_id: str, design_request: NetworkDesignRequest, thread_id: str) -> None:
+    semaphore = getattr(app.state, "network_design_job_semaphore", None)
+    try:
+        if semaphore is None:
+            update_network_design_job(job_id, status="running")
+            response = await _generate_network_design_run(design_request, thread_id)
+        else:
+            async with semaphore:
+                update_network_design_job(job_id, status="running")
+                response = await _generate_network_design_run(design_request, thread_id)
+        update_network_design_job(job_id, status="completed", run_id=response.run_id)
+    except asyncio.CancelledError:
+        update_network_design_job(job_id, status="cancelled", error="Job cancelled before completion.")
+        raise
+    except HTTPException as exc:
+        update_network_design_job(job_id, status="failed", error=str(exc.detail))
+    except Exception as exc:
+        update_network_design_job(job_id, status="failed", error=str(exc))
+
+
+@app.post("/network-design/chat/jobs", response_model=NetworkDesignJobResponse, status_code=202)
+async def network_design_chat_job_create(request: NetworkDesignRequest):
+    _ensure_network_design_package_ready(request)
+    thread_id = request.thread_id or str(uuid4())
+    now = _utc_now()
+    job = NetworkDesignJobResponse(
+        job_id=str(uuid4()),
+        thread_id=thread_id,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+    )
+    save_network_design_job(job)
+    task = asyncio.create_task(_run_network_design_job(job.job_id, request, thread_id))
+    getattr(app.state, "network_design_job_tasks", {})[job.job_id] = task
+    task.add_done_callback(lambda _: getattr(app.state, "network_design_job_tasks", {}).pop(job.job_id, None))
+    return job
+
+
+@app.get("/network-design/chat/jobs/{job_id}", response_model=NetworkDesignJobResponse)
+async def network_design_chat_job(job_id: str):
+    return load_network_design_job(job_id)
+
+
+@app.post("/network-design/chat", response_model=NetworkDesignRunResponse)
+async def network_design_chat(request: NetworkDesignRequest, client_request: Request):
+    _ensure_network_design_package_ready(request)
+    thread_id = request.thread_id or str(uuid4())
+    try:
+        return await _run_with_client_disconnect_cancel(_generate_network_design_run(request, thread_id), client_request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/network-design/standards/search", response_model=NetworkDesignStandardsSearchResponse)
@@ -2159,24 +2580,96 @@ async def network_design_run(run_id: str):
     return load_network_design_run(run_id)
 
 
-@app.post("/fortigate/design", response_model=FortiGateRunResponse)
-async def fortigate_design(request: FortiGateDesignRequest):
-    thread_id = request.thread_id or str(uuid4())
+async def _generate_fortigate_run(request: FortiGateDesignRequest, thread_id: str) -> FortiGateRunResponse:
+    timeout_seconds = float(getattr(app.state, "fortigate_design_timeout_seconds", 1800.0) or 0)
+    invoke = app.state.fortigate_graph.ainvoke(
+        {
+            "intake": request.intake.model_dump(),
+            "existing_config": request.existing_config,
+        },
+        config=_fortigate_config(thread_id, request.mode),
+    )
     try:
-        result = await app.state.fortigate_graph.ainvoke(
-            {
-                "intake": request.intake.model_dump(),
-                "existing_config": request.existing_config,
-            },
-            config=_fortigate_config(thread_id, request.mode),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        result = await asyncio.wait_for(invoke, timeout=timeout_seconds) if timeout_seconds > 0 else await invoke
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=f"FortiGate design exceeded {int(timeout_seconds)} seconds") from exc
     if app.state.langfuse is not None:
         app.state.langfuse.flush()
     response = fortigate_response_from_state(result, thread_id, app.state.model_name)
     save_fortigate_run(response)
     return response
+
+
+async def _run_with_client_disconnect_cancel(task_coro: Any, request: Request) -> Any:
+    task = asyncio.create_task(task_coro)
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise HTTPException(status_code=499, detail="Client disconnected; FortiGate generation cancelled")
+            await asyncio.sleep(1)
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def _run_fortigate_design_job(job_id: str, design_request: FortiGateDesignRequest, thread_id: str) -> None:
+    semaphore = getattr(app.state, "fortigate_design_job_semaphore", None)
+    try:
+        if semaphore is None:
+            update_fortigate_design_job(job_id, status="running")
+            response = await _generate_fortigate_run(design_request, thread_id)
+        else:
+            async with semaphore:
+                update_fortigate_design_job(job_id, status="running")
+                response = await _generate_fortigate_run(design_request, thread_id)
+        update_fortigate_design_job(job_id, status="completed", run_id=response.run_id)
+    except asyncio.CancelledError:
+        update_fortigate_design_job(job_id, status="cancelled", error="Job cancelled before completion.")
+        raise
+    except HTTPException as exc:
+        update_fortigate_design_job(job_id, status="failed", error=str(exc.detail))
+    except Exception as exc:
+        update_fortigate_design_job(job_id, status="failed", error=str(exc))
+
+
+@app.post("/fortigate/design/jobs", response_model=FortiGateDesignJobResponse, status_code=202)
+async def fortigate_design_job_create(request: FortiGateDesignRequest):
+    thread_id = request.thread_id or str(uuid4())
+    now = _utc_now()
+    job = FortiGateDesignJobResponse(
+        job_id=str(uuid4()),
+        thread_id=thread_id,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+    )
+    save_fortigate_design_job(job)
+    task = asyncio.create_task(_run_fortigate_design_job(job.job_id, request, thread_id))
+    getattr(app.state, "fortigate_design_job_tasks", {})[job.job_id] = task
+    task.add_done_callback(lambda _: getattr(app.state, "fortigate_design_job_tasks", {}).pop(job.job_id, None))
+    return job
+
+
+@app.get("/fortigate/design/jobs/{job_id}", response_model=FortiGateDesignJobResponse)
+async def fortigate_design_job(job_id: str):
+    return load_fortigate_design_job(job_id)
+
+
+@app.post("/fortigate/design", response_model=FortiGateRunResponse)
+async def fortigate_design(request: FortiGateDesignRequest, client_request: Request):
+    thread_id = request.thread_id or str(uuid4())
+    try:
+        return await _run_with_client_disconnect_cancel(_generate_fortigate_run(request, thread_id), client_request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/fortigate/interactive", response_model=FortiGateInteractiveResponse)

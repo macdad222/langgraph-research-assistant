@@ -127,6 +127,16 @@ class FortiGateRunSummary(BaseModel):
     validation_passed: bool
 
 
+class FortiGateDesignJobResponse(BaseModel):
+    job_id: str
+    thread_id: str
+    status: str = Field(default="queued", pattern="^(queued|running|completed|failed|cancelled)$")
+    created_at: str
+    updated_at: str
+    run_id: Optional[str] = None
+    error: str = ""
+
+
 class FortiGateRunResponse(BaseModel):
     run_id: str
     created_at: str

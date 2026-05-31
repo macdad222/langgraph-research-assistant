@@ -7,6 +7,7 @@ const querystring = require("node:querystring");
 const port = Number(process.env.PORT || 8080);
 const frontendPassword = process.env.FRONTEND_PASSWORD || "";
 const apiProxyTarget = process.env.API_PROXY_TARGET || "http://agent.lab.internal:8001";
+const apiProxyTimeoutMs = Number(process.env.API_PROXY_TIMEOUT_MS || 0);
 const authCookie = "fortigate_frontend_auth=1";
 const indexPath = path.join(__dirname, "index.html");
 const fortigatePath = path.join(__dirname, "fortigate.html");
@@ -56,6 +57,7 @@ function proxyApi(req, res) {
   const headers = { ...req.headers, host: upstreamUrl.host };
   delete headers.connection;
   delete headers["content-length"];
+  let upstreamResponded = false;
 
   const proxyReq = client.request(
     upstreamUrl,
@@ -64,14 +66,28 @@ function proxyApi(req, res) {
       headers,
     },
     (proxyRes) => {
+      upstreamResponded = true;
       res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
       proxyRes.pipe(res);
     },
   );
 
   proxyReq.on("error", (error) => {
+    if (res.writableEnded || upstreamResponded) return;
     res.writeHead(502, { "content-type": "application/json" });
     res.end(JSON.stringify({ detail: `API proxy failed: ${error.message}` }));
+  });
+
+  if (apiProxyTimeoutMs > 0) {
+    proxyReq.setTimeout(apiProxyTimeoutMs, () => {
+      proxyReq.destroy(new Error(`API proxy timed out after ${apiProxyTimeoutMs}ms`));
+    });
+  }
+
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      proxyReq.destroy(new Error("Client disconnected before upstream response completed"));
+    }
   });
 
   req.pipe(proxyReq);
