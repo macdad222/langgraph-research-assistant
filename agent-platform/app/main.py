@@ -1256,13 +1256,13 @@ def fortigate_model_extra_body(enable_thinking: bool = False, passthrough: bool 
     return body
 
 
-def chat_model_kwargs(extra_body: dict[str, Any] | None = None) -> dict[str, Any]:
+def chat_model_kwargs(extra_body: dict[str, Any] | None = None, max_tokens: int | None = None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "timeout": get_float_env("LITELLM_REQUEST_TIMEOUT_SECONDS", 600.0),
     }
-    max_tokens = get_int_env("MODEL_MAX_OUTPUT_TOKENS", 32768)
-    if max_tokens > 0:
-        kwargs["max_tokens"] = max_tokens
+    token_limit = get_int_env("MODEL_MAX_OUTPUT_TOKENS", 32768) if max_tokens is None else max_tokens
+    if token_limit > 0:
+        kwargs["max_tokens"] = token_limit
     if extra_body:
         kwargs["extra_body"] = extra_body
     return kwargs
@@ -1275,13 +1275,14 @@ def make_chat_model(
     api_key: str,
     temperature: float,
     extra_body: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> ChatOpenAI:
     return ChatOpenAI(
         model=model_name,
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
-        **chat_model_kwargs(extra_body),
+        **chat_model_kwargs(extra_body, max_tokens=max_tokens),
     )
 
 
@@ -1306,6 +1307,32 @@ async def lifespan(app: FastAPI):
     network_handoff_temperature = get_float_env("NETWORK_HANDOFF_TEMPERATURE", 0.0)
     network_chat_enable_thinking = get_bool_env("NETWORK_CHAT_ENABLE_THINKING", False)
 
+    fortigate_design_model_name = os.getenv("FORTIGATE_DESIGN_MODEL_NAME", model_name)
+    # implementation_intent has its own model knob (bake-off winner differs from design);
+    # defaults to the design model when unset.
+    fortigate_intent_model_name = os.getenv("FORTIGATE_INTENT_MODEL_NAME", fortigate_design_model_name)
+    fortigate_autonomous_repair_model_name = os.getenv("FORTIGATE_AUTONOMOUS_REPAIR_MODEL_NAME", model_name)
+    fortigate_autonomous_repair_temperature = get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_TEMPERATURE", 0.4)
+    # Global toggle for reasoning/thinking on the FortiGate review/repair/judge roles. Defaults to
+    # on to preserve prior behavior; set false to drop thinking tokens for speed.
+    fortigate_enable_thinking = get_bool_env("FORTIGATE_ENABLE_THINKING", True)
+    # Per-role override for the judge (gatekeeper): thinking-on gives stronger scoring even when
+    # the rest of the flow runs thinking-off. Defaults to the global flag.
+    fortigate_judge_enable_thinking = get_bool_env("FORTIGATE_JUDGE_ENABLE_THINKING", fortigate_enable_thinking)
+
+    # Per-role output token caps. Structuring/design/judge/repair stay tight; CLI-producing
+    # roles (generation, builder review, refine, package) stay generous.
+    generation_max_output_tokens = get_int_env("FORTIGATE_GENERATION_MAX_OUTPUT_TOKENS", get_int_env("MODEL_MAX_OUTPUT_TOKENS", 32768))
+    design_max_output_tokens = get_int_env("FORTIGATE_DESIGN_MAX_OUTPUT_TOKENS", 8192)
+    judge_max_output_tokens = get_int_env("FORTIGATE_JUDGE_MAX_OUTPUT_TOKENS", 8192)
+    builder_review_max_output_tokens = get_int_env("FORTIGATE_BUILDER_REVIEW_MAX_OUTPUT_TOKENS", generation_max_output_tokens)
+    config_refiner_max_output_tokens = get_int_env("FORTIGATE_CONFIG_REFINER_MAX_OUTPUT_TOKENS", generation_max_output_tokens)
+    autonomous_repair_max_output_tokens = get_int_env("FORTIGATE_AUTONOMOUS_REPAIR_MAX_OUTPUT_TOKENS", 8192)
+    network_chat_max_output_tokens = get_int_env("NETWORK_CHAT_MAX_OUTPUT_TOKENS", 4096)
+    network_intake_max_output_tokens = get_int_env("NETWORK_INTAKE_MAX_OUTPUT_TOKENS", 4096)
+    network_package_max_output_tokens = get_int_env("NETWORK_PACKAGE_MAX_OUTPUT_TOKENS", generation_max_output_tokens)
+    network_handoff_max_output_tokens = get_int_env("NETWORK_HANDOFF_MAX_OUTPUT_TOKENS", 8192)
+
     llm = make_chat_model(
         model_name=model_name,
         base_url=base_url,
@@ -1318,24 +1345,52 @@ async def lifespan(app: FastAPI):
         api_key=api_key,
         temperature=network_chat_temperature,
         extra_body=fortigate_model_extra_body(enable_thinking=network_chat_enable_thinking),
+        max_tokens=network_chat_max_output_tokens,
     )
     network_intake_model = make_chat_model(
         model_name=network_intake_model_name,
         base_url=base_url,
         api_key=api_key,
         temperature=network_intake_temperature,
+        max_tokens=network_intake_max_output_tokens,
     )
     network_package_model = make_chat_model(
         model_name=network_package_model_name,
         base_url=base_url,
         api_key=api_key,
         temperature=network_package_temperature,
+        max_tokens=network_package_max_output_tokens,
     )
     network_handoff_model = make_chat_model(
         model_name=network_handoff_model_name,
         base_url=base_url,
         api_key=api_key,
         temperature=network_handoff_temperature,
+        max_tokens=network_handoff_max_output_tokens,
+    )
+    fortigate_generation_model = make_chat_model(
+        model_name=model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=default_temperature,
+        extra_body=fortigate_model_extra_body(passthrough=True),
+        max_tokens=generation_max_output_tokens,
+    )
+    fortigate_design_model = make_chat_model(
+        model_name=fortigate_design_model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=default_temperature,
+        extra_body=fortigate_model_extra_body(passthrough=True),
+        max_tokens=design_max_output_tokens,
+    )
+    fortigate_intent_model = make_chat_model(
+        model_name=fortigate_intent_model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=default_temperature,
+        extra_body=fortigate_model_extra_body(passthrough=True),
+        max_tokens=design_max_output_tokens,
     )
 
     async with AsyncRedisSaver.from_conn_string(redis_url) as checkpointer:
@@ -1351,6 +1406,12 @@ async def lifespan(app: FastAPI):
         app.state.fortigate_builder_review_temperature = get_float_env("FORTIGATE_BUILDER_REVIEW_TEMPERATURE", 1.0)
         app.state.fortigate_config_refinement_mode = os.getenv("FORTIGATE_CONFIG_REFINEMENT_MODE", "pre_judge")
         app.state.fortigate_config_refiner_model_name = os.getenv("FORTIGATE_CONFIG_REFINER_MODEL_NAME", app.state.fortigate_judge_model_name)
+        app.state.fortigate_design_model_name = fortigate_design_model_name
+        app.state.fortigate_intent_model_name = fortigate_intent_model_name
+        app.state.fortigate_autonomous_repair_model_name = fortigate_autonomous_repair_model_name
+        app.state.fortigate_context_fallback_model_name = os.getenv("FORTIGATE_CONTEXT_FALLBACK_MODEL_NAME", "extl-gemma-4-31b")
+        app.state.fortigate_context_fallback_max_output_tokens = get_int_env("FORTIGATE_CONTEXT_FALLBACK_MAX_OUTPUT_TOKENS", 8192)
+        app.state.fortigate_context_fallback_temperature = get_float_env("FORTIGATE_CONTEXT_FALLBACK_TEMPERATURE", 0.2)
         app.state.fortigate_autonomous_repair_limit = int(get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_LIMIT", 1))
         app.state.fortigate_sectional_generation_enabled = get_bool_env("FORTIGATE_SECTIONAL_GENERATION_ENABLED", False)
         app.state.fortigate_design_timeout_seconds = get_float_env("FORTIGATE_DESIGN_TIMEOUT_SECONDS", 1800.0)
@@ -1379,7 +1440,9 @@ async def lifespan(app: FastAPI):
         app.state.graph = build_graph(llm, checkpointer)
         app.state.network_design_chat_model = network_chat_model
         app.state.network_design_intake_model = network_intake_model
-        app.state.fortigate_generation_model = llm
+        app.state.fortigate_generation_model = fortigate_generation_model
+        app.state.fortigate_design_model = fortigate_design_model
+        app.state.fortigate_intent_model = fortigate_intent_model
         app.state.research_graph = build_research_graph(llm, checkpointer, memory_retriever=retrieve_research_memory)
         app.state.interactive_research_graph = build_research_graph(
             llm,
@@ -1392,7 +1455,7 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=0,
-            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True, passthrough=True)),
+            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=fortigate_judge_enable_thinking, passthrough=True), max_tokens=judge_max_output_tokens),
         )
         app.state.fortigate_judge_model = judge_model
         builder_review_model = ChatOpenAI(
@@ -1400,15 +1463,15 @@ async def lifespan(app: FastAPI):
             base_url=base_url,
             api_key=api_key,
             temperature=app.state.fortigate_builder_review_temperature,
-            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True)),
+            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=fortigate_enable_thinking), max_tokens=builder_review_max_output_tokens),
         )
         app.state.fortigate_builder_review_model = builder_review_model
         autonomous_repair_model = ChatOpenAI(
-            model=model_name,
+            model=fortigate_autonomous_repair_model_name,
             base_url=base_url,
             api_key=api_key,
-            temperature=0.4,
-            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True)),
+            temperature=fortigate_autonomous_repair_temperature,
+            **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=fortigate_enable_thinking, passthrough=True), max_tokens=autonomous_repair_max_output_tokens),
         )
         app.state.fortigate_autonomous_repair_model = autonomous_repair_model
         refiner_model = judge_model
@@ -1418,40 +1481,61 @@ async def lifespan(app: FastAPI):
                 base_url=base_url,
                 api_key=api_key,
                 temperature=0,
-                **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=True, passthrough=True)),
+                **chat_model_kwargs(fortigate_model_extra_body(enable_thinking=fortigate_enable_thinking, passthrough=True), max_tokens=config_refiner_max_output_tokens),
             )
         app.state.fortigate_config_refiner_model = refiner_model
+        context_fallback_model = make_chat_model(
+            model_name=app.state.fortigate_context_fallback_model_name,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=app.state.fortigate_context_fallback_temperature,
+            extra_body=fortigate_model_extra_body(enable_thinking=fortigate_enable_thinking, passthrough=True),
+            max_tokens=app.state.fortigate_context_fallback_max_output_tokens,
+        )
+        app.state.fortigate_context_fallback_model = context_fallback_model
         app.state.fortigate_graph = build_fortigate_graph(
-            llm,
+            fortigate_generation_model,
             checkpointer,
+            design_model=fortigate_design_model,
+            design_model_name=fortigate_design_model_name,
+            intent_model=fortigate_intent_model,
+            intent_model_name=fortigate_intent_model_name,
             judge_model=judge_model,
             judge_model_name=app.state.fortigate_judge_model_name,
             builder_review_model=builder_review_model,
             builder_review_model_name=app.state.fortigate_builder_review_model_name,
             builder_review_mode=app.state.fortigate_builder_review_mode,
             autonomous_repair_model=autonomous_repair_model,
-            autonomous_repair_model_name=model_name,
+            autonomous_repair_model_name=fortigate_autonomous_repair_model_name,
             config_refiner_model=refiner_model,
             config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
             config_refinement_mode=app.state.fortigate_config_refinement_mode,
+            context_fallback_model=context_fallback_model,
+            context_fallback_model_name=app.state.fortigate_context_fallback_model_name,
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
             sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
         )
         app.state.interactive_fortigate_graph = build_fortigate_graph(
-            llm,
+            fortigate_generation_model,
             checkpointer,
             clarification_interrupt=True,
             human_review_interrupt=True,
+            design_model=fortigate_design_model,
+            design_model_name=fortigate_design_model_name,
+            intent_model=fortigate_intent_model,
+            intent_model_name=fortigate_intent_model_name,
             judge_model=judge_model,
             judge_model_name=app.state.fortigate_judge_model_name,
             builder_review_model=builder_review_model,
             builder_review_model_name=app.state.fortigate_builder_review_model_name,
             builder_review_mode=app.state.fortigate_builder_review_mode,
             autonomous_repair_model=autonomous_repair_model,
-            autonomous_repair_model_name=model_name,
+            autonomous_repair_model_name=fortigate_autonomous_repair_model_name,
             config_refiner_model=refiner_model,
             config_refiner_model_name=app.state.fortigate_config_refiner_model_name,
             config_refinement_mode=app.state.fortigate_config_refinement_mode,
+            context_fallback_model=context_fallback_model,
+            context_fallback_model_name=app.state.fortigate_context_fallback_model_name,
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
             sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
         )
@@ -2154,7 +2238,7 @@ def _fortigate_config(thread_id: str, mode: str = "artifact") -> dict[str, Any]:
     return config
 
 
-def _network_design_config(thread_id: str) -> dict[str, Any]:
+def _network_design_config(thread_id: str, run_name: str = "") -> dict[str, Any]:
     config = {
         "configurable": {"thread_id": f"network-design:{thread_id}"},
         "metadata": {
@@ -2163,6 +2247,8 @@ def _network_design_config(thread_id: str) -> dict[str, Any]:
             "langfuse_user_id": "local-dev",
         },
     }
+    if run_name:
+        config["run_name"] = run_name
     if app.state.langfuse_handler is not None:
         config["callbacks"] = [app.state.langfuse_handler]
     return config
@@ -2283,7 +2369,11 @@ def _normalize_network_design_readiness(
     structured_fields = structured.get("critical_fields") if isinstance(structured.get("critical_fields"), dict) else {}
     readiness_fields = readiness.get("critical_fields") if isinstance(readiness.get("critical_fields"), dict) else {}
     guided_fields = _guided_intake_field_updates(request)
-    raw_fields = {**readiness_fields, **structured_fields, **guided_fields}
+    # Layer prior critical_fields as the base so the intake LLM can return only the fields it
+    # changed this turn (deltas) without losing previously completed answers.
+    prior_intake = request.structured_intake if isinstance(request.structured_intake, dict) else {}
+    prior_fields = prior_intake.get("critical_fields") if isinstance(prior_intake.get("critical_fields"), dict) else {}
+    raw_fields = {**prior_fields, **readiness_fields, **structured_fields, **guided_fields}
     critical_fields: dict[str, dict[str, Any]] = {}
 
     for spec in NETWORK_DESIGN_CRITICAL_FIELDS:
@@ -2322,6 +2412,7 @@ def _normalize_network_design_readiness(
     complete_count = len(NETWORK_DESIGN_CRITICAL_FIELDS) - len(missing)
 
     structured = {
+        **prior_intake,
         **structured,
         "critical_fields": critical_fields,
         "assumptions": assumptions,
@@ -2397,6 +2488,20 @@ def _looks_off_topic_network_design(text: str) -> bool:
     return any(term in lowered for term in off_topic_terms) and not any(term in lowered for term in network_terms)
 
 
+def _has_off_topic_network_design_reference(text: str) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in ["nba", "nhl", "playoff", "stanley cup", "espn"])
+
+
+def _readiness_network_design_reply(readiness_report: dict[str, Any]) -> str:
+    if readiness_report.get("ready_for_package"):
+        return "The required intake is complete. You can generate the design package and FortiGate handoff."
+    question = str(readiness_report.get("next_question") or "").strip()
+    if question:
+        return f"I captured the latest design details.\n\n{question}"
+    return "I captured the latest design details. Please add the next required network design detail so we can complete the intake."
+
+
 def _clean_network_design_reply(text: str) -> str:
     cleaned = re.sub(
         r"^\s*I cannot fulfill the request to search for sports schedules\.\s*"
@@ -2414,25 +2519,33 @@ async def structure_network_design_intake(
     standards: list[Any],
     thread_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    transcript = "\n".join(f"{message.role}: {message.content}" for message in request.messages[-20:])
     prior = request.structured_intake if isinstance(request.structured_intake, dict) else {}
+    # Deterministic-first: if the form fields, guided answers, and prior structured state already
+    # satisfy every critical field, skip the intake LLM entirely.
+    pre_structured, pre_readiness = _normalize_network_design_readiness(
+        request,
+        prior,
+        request.readiness_report if isinstance(request.readiness_report, dict) else {},
+    )
+    if pre_readiness.get("ready_for_package"):
+        return pre_structured, pre_readiness
+    transcript = "\n".join(f"{message.role}: {message.content}" for message in request.messages[-20:])
     try:
         response = await app.state.network_design_intake_model.ainvoke(
             [
                 SystemMessage(
                     content=(
-                        "Return only JSON with keys structured_intake and readiness_report. "
-                        "Maintain a concise structured state for a FortiGate/network design conversation. "
-                        "structured_intake must include intake_updates, critical_fields, known_requirements, assumptions, constraints, "
-                        "open_questions, and evidence_notes. critical_fields must contain these exact keys: "
-                        "site_and_goal, wan, lan, security, routing_sdwan, remote_access, operations, fortigate_target. "
-                        "Each critical field must include field, label, status, summary, evidence, and question. "
-                        "status must be missing, partial, or complete. intake_updates may only use NetworkDesignIntake keys: "
-                        "customer_name, site_name, design_goal, business_context, constraints, preferred_fortigate_model, "
-                        "fortios_version. readiness_report must include readiness_score from 0 to 1, ready_for_package, "
-                        "missing_critical_fields, next_question, critical_fields, and assumptions. "
-                        "Choose exactly one next_question from the highest-priority missing or partial field. "
-                        "Mark ready_for_package true only when every critical field is complete. Do not invent site-specific values."
+                        "Return only JSON with key structured_intake. Maintain a concise structured state for a "
+                        "FortiGate/network design conversation. Return critical_fields as a DELTA: include only the "
+                        "critical fields whose status or summary changed because of the latest user message; previously "
+                        "captured fields are preserved automatically, so do not repeat unchanged fields. structured_intake "
+                        "may also include intake_updates, known_requirements, assumptions, constraints, and evidence_notes. "
+                        "critical_fields keys must come from this exact set: site_and_goal, wan, lan, security, "
+                        "routing_sdwan, remote_access, operations, fortigate_target. Each returned critical field must "
+                        "include field, label, status, summary, evidence, and question. status must be missing, partial, or "
+                        "complete. intake_updates may only use NetworkDesignIntake keys: customer_name, site_name, "
+                        "design_goal, business_context, constraints, preferred_fortigate_model, fortios_version. Do not "
+                        "return a readiness_report; readiness is computed deterministically. Do not invent site-specific values."
                     )
                 ),
                 HumanMessage(
@@ -2450,14 +2563,13 @@ async def structure_network_design_intake(
                     )
                 ),
             ],
-            config=_network_design_config(f"{thread_id}:intake"),
+            config=_network_design_config(f"{thread_id}:intake", run_name="network_design_intake"),
         )
         data = _extract_json_object(str(response.content))
     except Exception:
         data = {}
     structured = data.get("structured_intake") if isinstance(data.get("structured_intake"), dict) else prior
-    readiness = data.get("readiness_report") if isinstance(data.get("readiness_report"), dict) else {}
-    return _normalize_network_design_readiness(request, structured or {}, readiness or {})
+    return _normalize_network_design_readiness(request, structured or {}, {})
 
 
 @app.post("/network-design/message", response_model=NetworkDesignChatResponse)
@@ -2466,6 +2578,15 @@ async def network_design_message(request: NetworkDesignRequest):
     standards = search_standards(_network_design_chat_query(request), limit=8)
     transcript = "\n".join(f"{message.role}: {message.content}" for message in request.messages[-16:])
     structured_intake, readiness_report = await structure_network_design_intake(request, "", standards, thread_id)
+    if readiness_report.get("ready_for_package"):
+        return NetworkDesignChatResponse(
+            thread_id=thread_id,
+            model=getattr(app.state, "network_chat_model_name", app.state.model_name),
+            message=NetworkDesignMessage(role="assistant", content=_readiness_network_design_reply(readiness_report)),
+            standards=standards,
+            structured_intake=structured_intake,
+            readiness_report=readiness_report,
+        )
     try:
         result = await app.state.network_design_chat_model.ainvoke(
             [
@@ -2496,15 +2617,15 @@ async def network_design_message(request: NetworkDesignRequest):
                     )
                 ),
             ],
-            config=_network_design_config(thread_id),
+            config=_network_design_config(thread_id, run_name="network_design_chat"),
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if app.state.langfuse is not None:
         app.state.langfuse.flush()
     content = _clean_network_design_reply(str(result.content))
-    if _looks_off_topic_network_design(content):
-        content = _network_design_fallback_reply(request, standards)
+    if _looks_off_topic_network_design(content) or _has_off_topic_network_design_reference(content):
+        content = _readiness_network_design_reply(readiness_report)
     if not readiness_report.get("ready_for_package") and readiness_report.get("next_question"):
         question = str(readiness_report["next_question"]).strip()
         if question and question.lower() not in content.lower():
@@ -2616,11 +2737,14 @@ async def network_design_run(run_id: str):
 
 async def _generate_fortigate_run(request: FortiGateDesignRequest, thread_id: str) -> FortiGateRunResponse:
     timeout_seconds = float(getattr(app.state, "fortigate_design_timeout_seconds", 1800.0) or 0)
+    initial_state: dict[str, Any] = {
+        "intake": request.intake.model_dump(),
+        "existing_config": request.existing_config,
+    }
+    if request.seed_standards:
+        initial_state["standards"] = request.seed_standards
     invoke = app.state.fortigate_graph.ainvoke(
-        {
-            "intake": request.intake.model_dump(),
-            "existing_config": request.existing_config,
-        },
+        initial_state,
         config=_fortigate_config(thread_id, request.mode),
     )
     try:
@@ -2711,8 +2835,11 @@ async def fortigate_interactive(request: FortiGateDesignRequest):
     thread_id = request.thread_id or str(uuid4())
     checkpoint_thread_id = f"fortigate:{thread_id}"
     try:
+        interactive_initial_state: dict[str, Any] = {"intake": request.intake.model_dump(), "existing_config": request.existing_config}
+        if request.seed_standards:
+            interactive_initial_state["standards"] = request.seed_standards
         result = await app.state.interactive_fortigate_graph.ainvoke(
-            {"intake": request.intake.model_dump(), "existing_config": request.existing_config},
+            interactive_initial_state,
             config=_fortigate_config(thread_id, request.mode),
         )
     except Exception as exc:

@@ -19,6 +19,7 @@ class NetworkDesignState(TypedDict, total=False):
     readiness_report: dict[str, Any]
     messages: list[dict[str, Any]]
     standards_query: str
+    standards_query_used: str
     standards: list[dict[str, Any]]
     standard_requirements: list[dict[str, Any]]
     requirements_summary: dict[str, Any]
@@ -262,11 +263,18 @@ def build_network_design_graph(
 
     async def retrieve_standards(state: NetworkDesignState) -> NetworkDesignState:
         started_at, started_perf = _trace_start()
-        chunks = [chunk.model_dump() for chunk in search_standards(state.get("standards_query", ""), limit=10)]
-        return _trace_update(state, {"standards": chunks}, "retrieve_standards", started_at, started_perf, f"Retrieved {len(chunks)} standards chunk(s).")
+        query = state.get("standards_query", "")
+        # Per-thread reuse: the chat graph re-runs every turn, but standards only change
+        # when the query changes. Reuse the checkpointed result otherwise.
+        if state.get("standards") and state.get("standards_query_used") == query:
+            return _trace_update(state, {}, "retrieve_standards", started_at, started_perf, "Reused cached standards for unchanged query.", branch="cached")
+        chunks = [chunk.model_dump() for chunk in search_standards(query, limit=10)]
+        return _trace_update(state, {"standards": chunks, "standards_query_used": query, "standard_requirements": []}, "retrieve_standards", started_at, started_perf, f"Retrieved {len(chunks)} standards chunk(s).")
 
     async def curate_standards(state: NetworkDesignState) -> NetworkDesignState:
         started_at, started_perf = _trace_start()
+        if state.get("standard_requirements"):
+            return _trace_update(state, {}, "curate_standards", started_at, started_perf, "Reused cached standard requirements.", branch="cached")
         requirements = extract_standard_requirements(state.get("standards", []), max_requirements=24)
         return _trace_update(
             state,
@@ -299,7 +307,8 @@ def build_network_design_graph(
                         indent=2,
                     )
                 ),
-            ]
+            ],
+            config={"run_name": "summarize_requirements"},
         )
         data = _extract_json_object(str(response.content))
         requirements = data.get("requirements_summary") if isinstance(data.get("requirements_summary"), dict) else data
@@ -348,7 +357,8 @@ def build_network_design_graph(
                         indent=2,
                     )
                 ),
-            ]
+            ],
+            config={"run_name": "build_design_package"},
         )
         data = _extract_json_object(str(response.content))
         design = data.get("design_package") if isinstance(data.get("design_package"), dict) else data
@@ -387,7 +397,8 @@ def build_network_design_graph(
                         indent=2,
                     )
                 ),
-            ]
+            ],
+            config={"run_name": "build_fortigate_handoff"},
         )
         data = _extract_json_object(str(response.content))
         handoff = data.get("fortigate_handoff") if isinstance(data.get("fortigate_handoff"), dict) else data

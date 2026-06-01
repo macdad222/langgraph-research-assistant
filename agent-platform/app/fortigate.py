@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
@@ -334,6 +335,74 @@ def _standards_payload(standards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _summarized_findings(state: FortiGateState, *, include_judge: bool = False) -> dict[str, Any]:
+    """Collapse the verbose per-stage reports into a single deduplicated findings digest.
+
+    The reviewer/refiner/judge only need the actionable issues, not the full nested report
+    objects, so this keeps the LLM packet focused on the CLI under review.
+    """
+    report_keys = [
+        "intent_completeness_report",
+        "section_validation_report",
+        "cli_completeness_report",
+        "validation_report",
+        "standards_report",
+        "risk_report",
+    ]
+    if include_judge:
+        report_keys.append("judge_report")
+    blocking: list[str] = []
+    warnings: list[str] = []
+    for key in report_keys:
+        report = state.get(key, {}) or {}
+        if not isinstance(report, dict):
+            continue
+        for item in [*_as_list(report.get("blocking_issues")), *_as_list(report.get("issues"))]:
+            blocking.append(f"{key}: {item}")
+        for item in _as_list(report.get("warnings")):
+            warnings.append(f"{key}: {item}")
+    return {
+        "blocking_issues": list(dict.fromkeys(blocking))[:40],
+        "warnings": list(dict.fromkeys(warnings))[:60],
+    }
+
+
+def _review_payload(state: FortiGateState) -> dict[str, Any]:
+    """Compact packet for CLI-improving roles (builder review, refine).
+
+    Drops the duplicated config_sections (already merged into config_artifacts) and the
+    redundant logical_design, and replaces the full per-stage reports with summarized
+    findings. Keeps the design intent and the artifacts being improved.
+    """
+    payload: dict[str, Any] = {
+        "intake": state.get("intake", {}),
+        "fortigate_design": state.get("fortigate_design", {}),
+        "implementation_intent": state.get("implementation_intent", {}),
+        "change_impact": state.get("change_impact", {}),
+        "config_artifacts": state.get("config_artifacts", {}),
+        "findings": _summarized_findings(state),
+        "requires_human_input": state.get("requires_human_input", []),
+        "standards": _standards_payload(state.get("standards", [])),
+    }
+    if state.get("intake", {}).get("request_type") == "modify_existing":
+        payload["current_config_summary"] = state.get("current_config_summary", {})
+    return payload
+
+
+def _judge_payload(state: FortiGateState) -> dict[str, Any]:
+    """Compact judge packet: review artifacts plus builder/refine/repair provenance."""
+    payload = _review_payload(state)
+    payload.update(
+        {
+            "config_builder_review": state.get("config_builder_review", {}),
+            "config_refinement": state.get("config_refinement", {}),
+            "autonomous_repair_iterations": state.get("autonomous_repair_iterations", 0),
+            "auto_fixed_items": state.get("auto_fixed_items", []),
+        }
+    )
+    return payload
+
+
 def _fallback_cli(intake: dict[str, Any]) -> str:
     site = intake.get("site_name") or "site"
     lines = [
@@ -607,6 +676,10 @@ def build_fortigate_graph(
     checkpointer: AsyncRedisSaver,
     clarification_interrupt: bool = False,
     human_review_interrupt: bool = False,
+    design_model: ChatOpenAI | None = None,
+    design_model_name: str = "",
+    intent_model: ChatOpenAI | None = None,
+    intent_model_name: str = "",
     judge_model: ChatOpenAI | None = None,
     judge_model_name: str = "",
     builder_review_model: ChatOpenAI | None = None,
@@ -624,15 +697,25 @@ def build_fortigate_graph(
 ):
     normalized_builder_review_mode = builder_review_mode if builder_review_mode in {"off", "pre_refine"} else "pre_refine"
     normalized_refinement_mode = config_refinement_mode if config_refinement_mode in {"off", "pre_judge"} else "pre_judge"
+    # Structuring/design nodes use a tighter-token design model when provided; CLI generation
+    # nodes keep using the generous generation model.
+    design_llm = design_model or model
+    active_design_model_name = design_model_name or getattr(design_llm, "model_name", "configured-model")
+    # implementation_intent can run on its own model knob (bake-off winner differs from design);
+    # falls back to the design model when no dedicated intent model is configured.
+    intent_llm = intent_model or design_llm
+    active_intent_model_name = intent_model_name or active_design_model_name or getattr(intent_llm, "model_name", "configured-model")
 
-    async def ainvoke_with_context_fallback(model_to_use: ChatOpenAI, messages: list[Any], model_name: str) -> tuple[Any, str]:
+    async def ainvoke_with_context_fallback(model_to_use: ChatOpenAI, messages: list[Any], model_name: str, run_name: str | None = None) -> tuple[Any, str]:
+        # run_name names this generation in Langfuse (otherwise everything logs as "ChatOpenAI").
+        config = {"run_name": run_name} if run_name else None
         try:
-            return await model_to_use.ainvoke(messages), model_name
+            return await model_to_use.ainvoke(messages, config=config), model_name
         except Exception as exc:
             if context_fallback_model is None or not _is_context_window_error(exc):
                 raise
             fallback_name = context_fallback_model_name or getattr(context_fallback_model, "model_name", "context-fallback-model")
-            return await context_fallback_model.ainvoke(messages), fallback_name
+            return await context_fallback_model.ainvoke(messages, config=config), fallback_name
 
     async def intake_request(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
@@ -658,11 +741,26 @@ def build_fortigate_graph(
 
     async def parse_existing_config(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        summary = parse_fortigate_config(state.get("existing_config", "")).model_dump()
-        return _trace_update(state, {"current_config_summary": summary}, "parse_existing_config", started_at, started_perf, f"Parsed config with {summary.get('raw_line_count', 0)} line(s).")
+        # Config parsing and standards retrieval are independent; run them concurrently.
+        summary_obj, standards_chunks = await asyncio.gather(
+            asyncio.to_thread(parse_fortigate_config, state.get("existing_config", "")),
+            asyncio.to_thread(retrieve_fortigate_standards, state.get("intake", {}), 10),
+        )
+        summary = summary_obj.model_dump()
+        standards = [chunk.model_dump() for chunk in standards_chunks]
+        return _trace_update(
+            state,
+            {"current_config_summary": summary, "standards": standards},
+            "parse_existing_config",
+            started_at,
+            started_perf,
+            f"Parsed config with {summary.get('raw_line_count', 0)} line(s); retrieved {len(standards)} standard chunk(s).",
+        )
 
     async def retrieve_standards(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
+        if state.get("standards"):
+            return _trace_update(state, {}, "retrieve_standards", started_at, started_perf, "Standards already retrieved upstream.", branch="cached")
         standards = [chunk.model_dump() for chunk in retrieve_fortigate_standards(state.get("intake", {}), limit=10)]
         return _trace_update(state, {"standards": standards}, "retrieve_standards", started_at, started_perf, f"Retrieved {len(standards)} company standard chunk(s).")
 
@@ -685,11 +783,14 @@ def build_fortigate_graph(
 
     async def build_logical_design(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, _ = await ainvoke_with_context_fallback(
+            design_llm,
             [
                 SystemMessage(content="Return only JSON with key logical_design. Build a vendor-neutral network/security design from the intake, current config summary, and company standards."),
                 HumanMessage(content=json.dumps({"intake": state.get("intake", {}), "current_config_summary": state.get("current_config_summary", {}), "standards": _standards_payload(state.get("standards", []))}, indent=2)),
-            ]
+            ],
+            active_design_model_name,
+            run_name="build_logical_design",
         )
         data = _extract_json_object(str(response.content))
         design = data.get("logical_design") if isinstance(data.get("logical_design"), dict) else data
@@ -697,11 +798,14 @@ def build_fortigate_graph(
 
     async def build_fortigate_design(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, _ = await ainvoke_with_context_fallback(
+            design_llm,
             [
                 SystemMessage(content="Return only JSON with key fortigate_design. Map the logical design to FortiGate constructs: interfaces, zones, SD-WAN, routes, objects, policies, NAT/VIP, VPN, logging, HA."),
                 HumanMessage(content=json.dumps({"intake": state.get("intake", {}), "logical_design": state.get("logical_design", {}), "current_config_summary": state.get("current_config_summary", {}), "standards": _standards_payload(state.get("standards", []))}, indent=2)),
-            ]
+            ],
+            active_design_model_name,
+            run_name="build_fortigate_design",
         )
         data = _extract_json_object(str(response.content))
         design = data.get("fortigate_design") if isinstance(data.get("fortigate_design"), dict) else data
@@ -709,7 +813,8 @@ def build_fortigate_graph(
 
     async def build_implementation_intent(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response, _ = await ainvoke_with_context_fallback(
+            intent_llm,
             [
                 SystemMessage(
                     content=(
@@ -739,7 +844,9 @@ def build_fortigate_graph(
                         indent=2,
                     )
                 ),
-            ]
+            ],
+            active_intent_model_name,
+            run_name="build_implementation_intent",
         )
         data = _extract_json_object(str(response.content))
         intent = data.get("implementation_intent") if isinstance(data.get("implementation_intent"), dict) else data
@@ -769,7 +876,7 @@ def build_fortigate_graph(
 
     async def repair_implementation_intent(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        response = await model.ainvoke(
+        response = await intent_llm.ainvoke(
             [
                 SystemMessage(
                     content=(
@@ -792,7 +899,8 @@ def build_fortigate_graph(
                         indent=2,
                     )
                 ),
-            ]
+            ],
+            config={"run_name": "repair_implementation_intent"},
         )
         data = _extract_json_object(str(response.content))
         intent = data.get("implementation_intent") if isinstance(data.get("implementation_intent"), dict) else data
@@ -866,6 +974,7 @@ def build_fortigate_graph(
             ]
             ,
             getattr(model, "model_name", "configured-model"),
+            run_name="generate_config_artifacts",
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data
@@ -886,13 +995,10 @@ def build_fortigate_graph(
                             "section_name": section_name,
                             "intake": state.get("intake", {}),
                             "current_config_summary": state.get("current_config_summary", {}),
-                            "logical_design": state.get("logical_design", {}),
                             "fortigate_design": state.get("fortigate_design", {}),
-                            "implementation_intent": state.get("implementation_intent", {}),
-                            "intent_completeness_report": state.get("intent_completeness_report", {}),
-                            "change_impact": state.get("change_impact", {}),
-                            "prior_sections": state.get("config_sections", {}),
-                            "standards": _standards_payload(state.get("standards", [])),
+                            "implementation_intent": _section_intent_slice(state, section_name),
+                            "dependency_context": _section_dependency_context(state, section_name),
+                            "standards": _section_standards_payload(state, section_name),
                         },
                         indent=2,
                     )
@@ -900,6 +1006,7 @@ def build_fortigate_graph(
             ]
             ,
             getattr(model, "model_name", "configured-model"),
+            run_name=f"build_{section_name}_section",
         )
         data = _extract_json_object(str(response.content))
         section = _normalize_section(section_name, data)
@@ -1031,6 +1138,7 @@ def build_fortigate_graph(
                 ),
             ],
             repair_model_name,
+            run_name=f"repair_{section_name}_section",
         )
         data = _extract_json_object(str(response.content))
         return _normalize_section(section_name, data), used_model_name
@@ -1050,17 +1158,27 @@ def build_fortigate_graph(
             if not task.get("requires_model")
             for item in _as_list(task.get("requires_human_input"))
         ]
-        repaired_sections: dict[str, dict[str, Any]] = {}
-        used_models: list[str] = []
+        unique_tasks: list[dict[str, Any]] = []
+        seen_sections: set[str] = set()
         for task in model_tasks:
             section_name = str(task.get("section_name") or "")
-            if section_name in repaired_sections:
+            if section_name in seen_sections:
                 continue
-            section, used_model_name = await _repair_section_task(state, task, repair_model, repair_model_name)
-            if section.get("cli_blocks"):
-                section["repaired_by_model"] = used_model_name
-                repaired_sections[section_name] = section
-                used_models.append(used_model_name)
+            seen_sections.add(section_name)
+            unique_tasks.append(task)
+        repaired_sections: dict[str, dict[str, Any]] = {}
+        used_models: list[str] = []
+        if unique_tasks:
+            # Section repairs are independent; run them concurrently to cut wall-clock time.
+            results = await asyncio.gather(
+                *(_repair_section_task(state, task, repair_model, repair_model_name) for task in unique_tasks)
+            )
+            for task, (section, used_model_name) in zip(unique_tasks, results):
+                section_name = str(task.get("section_name") or "")
+                if section.get("cli_blocks"):
+                    section["repaired_by_model"] = used_model_name
+                    repaired_sections[section_name] = section
+                    used_models.append(used_model_name)
         if repaired_sections:
             sections, artifacts = _merge_repaired_sections(state, repaired_sections)
             repaired_notes = [
@@ -1127,31 +1245,11 @@ def build_fortigate_graph(
                         "config_builder_review."
                     )
                 ),
-                HumanMessage(
-                    content=json.dumps(
-                        {
-                            "intake": state.get("intake", {}),
-                            "current_config_summary": state.get("current_config_summary", {}),
-                            "logical_design": state.get("logical_design", {}),
-                            "fortigate_design": state.get("fortigate_design", {}),
-                            "implementation_intent": state.get("implementation_intent", {}),
-                            "change_impact": state.get("change_impact", {}),
-                            "config_sections": state.get("config_sections", {}),
-                            "section_validation_report": state.get("section_validation_report", {}),
-                            "config_artifacts": state.get("config_artifacts", {}),
-                            "intent_completeness_report": state.get("intent_completeness_report", {}),
-                            "cli_completeness_report": state.get("cli_completeness_report", {}),
-                            "validation_report": state.get("validation_report", {}),
-                            "standards_report": state.get("standards_report", {}),
-                            "risk_report": state.get("risk_report", {}),
-                            "standards": _standards_payload(state.get("standards", [])),
-                        },
-                        indent=2,
-                    )
-                ),
+                HumanMessage(content=json.dumps(_review_payload(state), indent=2)),
             ]
             ,
             reviewer_name,
+            run_name="builder_review_config_artifacts",
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
@@ -1196,31 +1294,11 @@ def build_fortigate_graph(
                         "appropriate, return it unchanged and explain that in config_refinement."
                     )
                 ),
-                HumanMessage(
-                    content=json.dumps(
-                        {
-                            "intake": state.get("intake", {}),
-                            "current_config_summary": state.get("current_config_summary", {}),
-                            "logical_design": state.get("logical_design", {}),
-                            "fortigate_design": state.get("fortigate_design", {}),
-                            "implementation_intent": state.get("implementation_intent", {}),
-                            "change_impact": state.get("change_impact", {}),
-                            "config_sections": state.get("config_sections", {}),
-                            "section_validation_report": state.get("section_validation_report", {}),
-                            "config_artifacts": state.get("config_artifacts", {}),
-                            "intent_completeness_report": state.get("intent_completeness_report", {}),
-                            "cli_completeness_report": state.get("cli_completeness_report", {}),
-                            "validation_report": state.get("validation_report", {}),
-                            "standards_report": state.get("standards_report", {}),
-                            "risk_report": state.get("risk_report", {}),
-                            "standards": _standards_payload(state.get("standards", [])),
-                        },
-                        indent=2,
-                    )
-                ),
+                HumanMessage(content=json.dumps(_review_payload(state), indent=2)),
             ]
             ,
             refiner_name,
+            run_name="refine_config_artifacts",
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else {}
@@ -1251,28 +1329,7 @@ def build_fortigate_graph(
 
     async def frontier_model_judge(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        packet = {
-            "intake": state.get("intake", {}),
-            "current_config_summary": state.get("current_config_summary", {}),
-            "logical_design": state.get("logical_design", {}),
-            "fortigate_design": state.get("fortigate_design", {}),
-            "implementation_intent": state.get("implementation_intent", {}),
-            "intent_completeness_report": state.get("intent_completeness_report", {}),
-            "change_impact": state.get("change_impact", {}),
-            "config_sections": state.get("config_sections", {}),
-            "section_validation_report": state.get("section_validation_report", {}),
-            "config_artifacts": state.get("config_artifacts", {}),
-            "cli_completeness_report": state.get("cli_completeness_report", {}),
-            "validation_report": state.get("validation_report", {}),
-            "standards_report": state.get("standards_report", {}),
-            "risk_report": state.get("risk_report", {}),
-            "config_builder_review": state.get("config_builder_review", {}),
-            "config_refinement": state.get("config_refinement", {}),
-            "autonomous_repair_iterations": state.get("autonomous_repair_iterations", 0),
-            "auto_fixed_items": state.get("auto_fixed_items", []),
-            "requires_human_input": state.get("requires_human_input", []),
-            "standards": _standards_payload(state.get("standards", [])),
-        }
+        packet = _judge_payload(state)
         active_judge = judge_model or model
         active_judge_name = judge_model_name or getattr(model, "model_name", "configured-model")
         try:
@@ -1317,6 +1374,7 @@ def build_fortigate_graph(
             ]
             ,
             getattr(model, "model_name", "configured-model"),
+            run_name="revise_after_judge",
         )
         data = _extract_json_object(str(response.content))
         artifacts = data.get("config_artifacts") if isinstance(data.get("config_artifacts"), dict) else data

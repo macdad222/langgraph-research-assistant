@@ -55,7 +55,7 @@ services:
     build: ./frontend
     container_name: research-frontend
     environment:
-      FRONTEND_PASSWORD: ${FRONTEND_PASSWORD:?Set FRONTEND_PASSWORD in .env}
+      FRONTEND_PASSWORD: ${FRONTEND_PASSWORD:-fortidesignagent}
       API_PROXY_TARGET: ${API_PROXY_TARGET:-http://agent.lab.internal:8001}
     ports:
       - "8080:8080"

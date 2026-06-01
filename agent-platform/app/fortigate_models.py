@@ -63,6 +63,9 @@ class FortiGateDesignRequest(BaseModel):
     existing_config: str = ""
     thread_id: Optional[str] = None
     mode: str = "artifact"
+    # Standards already retrieved upstream (e.g. by the Network Design handoff). When provided,
+    # the FortiGate graph reuses them instead of retrieving a third time.
+    seed_standards: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FortiGateInteractiveResponse(BaseModel):

@@ -23,7 +23,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return {}
 
 
-async def run_frontier_judge(model: ChatOpenAI, review_packet: dict[str, Any], judge_model_name: str = "") -> FortiGateJudgeReport:
+async def run_frontier_judge(model: ChatOpenAI, review_packet: dict[str, Any], judge_model_name: str = "", run_name: str = "frontier_model_judge") -> FortiGateJudgeReport:
     response = await model.ainvoke(
         [
             SystemMessage(
@@ -38,7 +38,8 @@ async def run_frontier_judge(model: ChatOpenAI, review_packet: dict[str, Any], j
                 )
             ),
             HumanMessage(content=json.dumps(review_packet, indent=2)),
-        ]
+        ],
+        config={"run_name": run_name} if run_name else None,
     )
     data = _extract_json_object(str(response.content))
     if not data:

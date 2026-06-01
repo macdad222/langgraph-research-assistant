@@ -111,6 +111,57 @@
       color: #cbd5e1;
       font-weight: 750;
     }
+    .guided-panel {
+      width: min(920px, 100%);
+      margin: 0 auto 24px;
+    }
+    .guided-card {
+      border: 1px solid rgba(56, 189, 248, .28);
+      border-radius: 18px;
+      background: rgba(15, 23, 42, .78);
+      padding: 14px;
+      margin: 0 0 12px;
+    }
+    .guided-card h3 {
+      margin: 0 0 8px;
+      color: #dbeafe;
+      font-size: 16px;
+    }
+    .guided-card p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .guided-question {
+      border: 1px solid rgba(148, 163, 184, .18);
+      border-radius: 14px;
+      padding: 12px;
+      margin: 10px 0;
+      background: rgba(2, 6, 23, .42);
+    }
+    .guided-question h4 {
+      margin: 0 0 8px;
+      color: #e0f2fe;
+      font-size: 14px;
+    }
+    .guided-options {
+      display: grid;
+      gap: 8px;
+    }
+    .guided-option {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      color: #cbd5e1;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .guided-option input { width: auto; margin-top: 2px; }
+    .guided-custom {
+      margin-top: 8px;
+      min-height: 58px;
+    }
     .composer-wrap {
       padding: 14px 20px 22px;
       border-top: 1px solid rgba(39, 52, 73, .62);
@@ -320,6 +371,7 @@
           </div>
         </div>
         <div id="chat-log" class="chat-log"></div>
+        <div id="guided-intake-panel" class="guided-panel"></div>
       </main>
 
       <div class="composer-wrap">
@@ -340,6 +392,7 @@
           <div class="status">Chat first. Use the guided actions when you are ready for artifacts.</div>
         </div>
         <div class="links">
+          <a href="/inventory">Inventory</a>
           <a href="/fortigate">FortiGate</a>
         </div>
       </div>
@@ -467,12 +520,15 @@
     let currentFortiGateRun = null;
     let currentStructuredIntake = {};
     let currentReadinessReport = {};
+    let initialGuidedBatchSubmitted = false;
+    let packageStartInProgress = false;
 
     const statusEl = document.getElementById("status");
     const exportStatusEl = document.getElementById("export-status");
     const rawEl = document.getElementById("raw");
     const resultsEl = document.getElementById("results");
     const resultsCard = document.getElementById("results-card");
+    const guidedIntakePanel = document.getElementById("guided-intake-panel");
     const fortigateReviewCard = document.getElementById("fortigate-review-card");
     const copyMarkdown = document.getElementById("copy-markdown");
     const copyHandoff = document.getElementById("copy-handoff");
@@ -503,6 +559,23 @@
       }
     }
 
+    function apiErrorMessage(payload, fallback) {
+      const detail = payload?.detail;
+      if (typeof detail === "string") return detail;
+      if (detail && typeof detail === "object") {
+        const parts = [];
+        if (detail.message) parts.push(detail.message);
+        if (Array.isArray(detail.missing_critical_fields) && detail.missing_critical_fields.length) {
+          const fields = detail.readiness_report?.critical_fields || {};
+          const labels = detail.missing_critical_fields.map((field) => fields[field]?.label || field);
+          parts.push(`Missing: ${labels.join(", ")}.`);
+        }
+        if (detail.next_question) parts.push(`Next question: ${detail.next_question}`);
+        return parts.join(" ") || fallback;
+      }
+      return payload?.error || fallback;
+    }
+
     async function startFortiGateDesignJob(payload, onUpdate) {
       const startResponse = await fetch(`${apiBase}/fortigate/design/jobs`, {
         method: "POST",
@@ -511,7 +584,7 @@
       });
       let job = await readJsonResponse(startResponse);
       if (!startResponse.ok) {
-        throw new Error(job.detail || startResponse.statusText);
+        throw new Error(apiErrorMessage(job, startResponse.statusText));
       }
       onUpdate?.(job);
       while (["queued", "running"].includes(job.status)) {
@@ -519,7 +592,7 @@
         const statusResponse = await fetch(`${apiBase}/fortigate/design/jobs/${job.job_id}`);
         job = await readJsonResponse(statusResponse);
         if (!statusResponse.ok) {
-          throw new Error(job.detail || statusResponse.statusText);
+          throw new Error(apiErrorMessage(job, statusResponse.statusText));
         }
         onUpdate?.(job);
       }
@@ -529,7 +602,7 @@
       const runResponse = await fetch(`${apiBase}/fortigate/runs/${job.run_id}`);
       const run = await readJsonResponse(runResponse);
       if (!runResponse.ok) {
-        throw new Error(run.detail || runResponse.statusText);
+        throw new Error(apiErrorMessage(run, runResponse.statusText));
       }
       return { job, run };
     }
@@ -542,7 +615,11 @@
       });
       let job = await readJsonResponse(startResponse);
       if (!startResponse.ok) {
-        throw new Error(job.detail || startResponse.statusText);
+        if (job.detail?.readiness_report) {
+          currentReadinessReport = job.detail.readiness_report;
+          updateReadinessUi();
+        }
+        throw new Error(apiErrorMessage(job, startResponse.statusText));
       }
       onUpdate?.(job);
       while (["queued", "running"].includes(job.status)) {
@@ -550,7 +627,7 @@
         const statusResponse = await fetch(`${apiBase}/network-design/chat/jobs/${job.job_id}`);
         job = await readJsonResponse(statusResponse);
         if (!statusResponse.ok) {
-          throw new Error(job.detail || statusResponse.statusText);
+          throw new Error(apiErrorMessage(job, statusResponse.statusText));
         }
         onUpdate?.(job);
       }
@@ -560,7 +637,7 @@
       const runResponse = await fetch(`${apiBase}/network-design/runs/${job.run_id}`);
       const run = await readJsonResponse(runResponse);
       if (!runResponse.ok) {
-        throw new Error(run.detail || runResponse.statusText);
+        throw new Error(apiErrorMessage(run, runResponse.statusText));
       }
       return { job, run };
     }
@@ -587,7 +664,81 @@
       return (currentReadinessReport?.missing_critical_fields || []).map((field) => fields[field]?.label || field);
     }
 
+    const guidedOptionTemplates = {
+      wan: [
+        "Dual WAN primary/backup: ISP1 is primary internet, ISP2 is backup/failover. Use static IP details where available and DHCP only if the circuit requires it.",
+        "Dual WAN load-sharing: use both circuits for outbound traffic with health checks and fail over if either circuit degrades."
+      ],
+      lan: [
+        "Baseline branch VLANs: corporate VLAN, voice VLAN, and guest VLAN with separate DHCP scopes and gateways.",
+        "Simple branch VLANs: corporate VLAN and guest VLAN only, with guest isolated from internal resources."
+      ],
+      security: [
+        "Guest internet-only; corporate can reach approved internal and internet services; deny unsolicited inbound traffic.",
+        "Strict default-deny zones; explicitly allow only required inter-zone traffic and management access."
+      ],
+      routing_sdwan: [
+        "Static default route through SD-WAN with primary/backup failover based on link health.",
+        "App-aware SD-WAN with performance SLA checks for latency, jitter, packet loss, and preferred applications."
+      ],
+      remote_access: [
+        "SSL VPN for administrators with MFA, limited to management and corporate resources.",
+        "No remote access VPN in this phase; prepare the design so VPN can be added later."
+      ],
+      operations: [
+        "Send logs to FortiAnalyzer, SNMP to monitoring, use a scheduled change window, and rollback by restoring the previous config.",
+        "Basic local logging and manual config backup for a small site, with monitoring added later."
+      ],
+      fortigate_target: [
+        "FortiGate 60F on FortiOS 7.4 for a small branch.",
+        "FortiGate 100F on FortiOS 7.4 for a larger branch or higher throughput need."
+      ],
+      site_and_goal: [
+        "Single branch edge design with dual WAN, segmented LAN, guest isolation, and FortiGate handoff.",
+        "New site build with firewall, switching, wireless, VPN, logging, and operational handoff."
+      ]
+    };
+
+    function missingCriticalFields() {
+      return currentReadinessReport?.missing_critical_fields || [];
+    }
+
+    function criticalField(fieldId) {
+      return currentReadinessReport?.critical_fields?.[fieldId] || { field: fieldId, label: fieldId, question: currentReadinessReport?.next_question || "" };
+    }
+
+    function guidedOptions(fieldId) {
+      return guidedOptionTemplates[fieldId] || [
+        `Use the recommended baseline for ${criticalField(fieldId).label || fieldId}.`,
+        `Keep ${criticalField(fieldId).label || fieldId} simple for this phase.`
+      ];
+    }
+
+    function buildGuidedQuestion(fieldId, mode) {
+      const field = criticalField(fieldId);
+      const options = guidedOptions(fieldId);
+      return `
+        <div class="guided-question" data-guided-field="${escapeHtml(fieldId)}">
+          <h4>${escapeHtml(field.label || fieldId)}</h4>
+          <p>${escapeHtml(field.question || currentReadinessReport?.next_question || "Provide this design detail.")}</p>
+          <div class="guided-options">
+            <label class="guided-option"><input type="radio" name="guided-${escapeHtml(mode)}-${escapeHtml(fieldId)}" value="${escapeHtml(options[0])}"> <span>${escapeHtml(options[0])}</span></label>
+            <label class="guided-option"><input type="radio" name="guided-${escapeHtml(mode)}-${escapeHtml(fieldId)}" value="${escapeHtml(options[1])}"> <span>${escapeHtml(options[1])}</span></label>
+            <label class="guided-option"><input type="radio" name="guided-${escapeHtml(mode)}-${escapeHtml(fieldId)}" value="__custom__"> <span>Use my typed answer below.</span></label>
+          </div>
+          <textarea class="guided-custom" data-guided-custom="${escapeHtml(fieldId)}" placeholder="Optional custom answer for ${escapeHtml(field.label || fieldId)}"></textarea>
+        </div>
+      `;
+    }
+
+    function buildInitialQuestionBatch() {
+      return missingCriticalFields().filter((field) => field !== "site_and_goal").slice(0, 7);
+    }
+
     function updateReadinessUi() {
+      if (currentReadinessReport?.critical_fields && !currentStructuredIntake?.critical_fields) {
+        currentStructuredIntake = { ...(currentStructuredIntake || {}), critical_fields: currentReadinessReport.critical_fields };
+      }
       const pill = document.getElementById("readiness-pill");
       const nextQuestion = document.getElementById("next-question");
       const missingFields = document.getElementById("missing-fields");
@@ -603,12 +754,90 @@
         ? labels.map((label) => `<li>${escapeHtml(label)}</li>`).join("")
         : "";
       document.getElementById("run-design").disabled = !ready;
+      renderGuidedIntakeCards();
     }
 
     function readinessBlockMessage() {
       const labels = missingFieldLabels();
       const question = currentReadinessReport?.next_question || "Please continue the chat to complete the required intake details.";
       return `Package generation is blocked until intake is complete.${labels.length ? ` Missing: ${labels.join(", ")}.` : ""} Next question: ${question}`;
+    }
+
+    function selectedGuidedAnswers(mode) {
+      const answers = [];
+      guidedIntakePanel.querySelectorAll("[data-guided-field]").forEach((card) => {
+        const fieldId = card.dataset.guidedField;
+        const field = criticalField(fieldId);
+        const selected = card.querySelector(`input[name="guided-${mode}-${fieldId}"]:checked`);
+        const custom = card.querySelector("[data-guided-custom]")?.value.trim() || "";
+        let answer = selected?.value || "";
+        if (answer === "__custom__") answer = custom;
+        if (!answer && custom) answer = custom;
+        if (answer) answers.push(`${field.label || fieldId}: ${answer}`);
+      });
+      return answers;
+    }
+
+    async function submitGuidedAnswers(mode) {
+      const answers = selectedGuidedAnswers(mode);
+      if (!answers.length) {
+        statusEl.textContent = "Choose at least one guided option or type a custom answer.";
+        return;
+      }
+      if (mode === "batch") initialGuidedBatchSubmitted = true;
+      guidedIntakePanel.innerHTML = "";
+      await sendMessage(`Guided intake answers:\n${answers.map((answer) => `- ${answer}`).join("\n")}`);
+    }
+
+    function renderStartPackageCard() {
+      guidedIntakePanel.innerHTML = `
+        <div class="guided-card">
+          <h3>Ready to Build</h3>
+          <p>The required intake is complete. Start the design package job when you are ready.</p>
+          <button id="guided-start-package">Start Design Package</button>
+        </div>
+      `;
+      document.getElementById("guided-start-package")?.addEventListener("click", () => runNetworkDesignPackage());
+    }
+
+    function renderGuidedIntakeCards() {
+      if (!guidedIntakePanel) return;
+      if (currentReadinessReport?.ready_for_package) {
+        renderStartPackageCard();
+        return;
+      }
+      const missing = missingCriticalFields();
+      if (!missing.length || messages.length < 2) {
+        guidedIntakePanel.innerHTML = "";
+        return;
+      }
+      if (!initialGuidedBatchSubmitted) {
+        const batch = buildInitialQuestionBatch();
+        if (!batch.length) {
+          initialGuidedBatchSubmitted = true;
+        } else {
+          guidedIntakePanel.innerHTML = `
+            <div class="guided-card">
+              <h3>Quick Guided Intake</h3>
+              <p>Pick the closest recommended option for each topic, or use the custom answer field. You can answer any subset now.</p>
+              ${batch.map((fieldId) => buildGuidedQuestion(fieldId, "batch")).join("")}
+              <button id="submit-guided-batch">Submit Guided Answers</button>
+            </div>
+          `;
+          document.getElementById("submit-guided-batch")?.addEventListener("click", () => submitGuidedAnswers("batch"));
+          return;
+        }
+      }
+      const fieldId = missing[0];
+      guidedIntakePanel.innerHTML = `
+        <div class="guided-card">
+          <h3>Next Required Detail</h3>
+          <p>Answer this one and I will update readiness before asking the next question.</p>
+          ${buildGuidedQuestion(fieldId, "single")}
+          <button id="submit-guided-single">Submit Answer</button>
+        </div>
+      `;
+      document.getElementById("submit-guided-single")?.addEventListener("click", () => submitGuidedAnswers("single"));
     }
 
     function slug(value) {
@@ -997,9 +1226,9 @@
         }
         currentStructuredIntake = data.structured_intake || currentStructuredIntake || {};
         currentReadinessReport = data.readiness_report || {};
-        updateReadinessUi();
         messages.push(data.message);
         renderMessages();
+        updateReadinessUi();
         document.getElementById("standards-pill").textContent = `Standards: ${(data.standards || []).length}`;
         rawEl.textContent = JSON.stringify(data, null, 2);
         statusEl.textContent = "Assistant replied. Continue chatting or generate a package.";
@@ -1098,7 +1327,8 @@
       item.addEventListener("click", () => sendMessage(item.textContent));
     });
 
-    document.getElementById("run-design").addEventListener("click", async () => {
+    async function runNetworkDesignPackage() {
+      if (packageStartInProgress) return;
       const pending = document.getElementById("chat-message").value.trim();
       if (pending) {
         const sent = await sendMessage();
@@ -1115,8 +1345,15 @@
         return;
       }
       const button = document.getElementById("run-design");
+      packageStartInProgress = true;
       button.disabled = true;
       statusEl.textContent = "Starting network design package job...";
+      guidedIntakePanel.innerHTML = `
+        <div class="guided-card">
+          <h3>Building Design Package</h3>
+          <p>The design package job is starting. This page will poll until it finishes.</p>
+        </div>
+      `;
       try {
         const { job, run } = await startNetworkDesignJob(
           {
@@ -1137,9 +1374,12 @@
         statusEl.textContent = `Browser error: ${error.message}`;
         rawEl.textContent = String(error.stack || error);
       } finally {
+        packageStartInProgress = false;
         button.disabled = !currentReadinessReport?.ready_for_package;
       }
-    });
+    }
+
+    document.getElementById("run-design").addEventListener("click", () => runNetworkDesignPackage());
 
     document.getElementById("search-standards").addEventListener("click", async () => {
       const query = [document.getElementById("goal").value, document.getElementById("chat-message").value, messages.map((m) => m.content).join(" ")].filter(Boolean).join(" ") || "network design fortigate sd-wan firewall";
@@ -1188,6 +1428,8 @@
       currentFortiGateRun = null;
       currentStructuredIntake = {};
       currentReadinessReport = {};
+      initialGuidedBatchSubmitted = false;
+      packageStartInProgress = false;
       updateReadinessUi();
       copyMarkdown.disabled = true;
       copyHandoff.disabled = true;

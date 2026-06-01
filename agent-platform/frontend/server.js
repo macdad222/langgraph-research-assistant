@@ -12,6 +12,7 @@ const authCookie = "fortigate_frontend_auth=1";
 const indexPath = path.join(__dirname, "index.html");
 const fortigatePath = path.join(__dirname, "fortigate.html");
 const networkDesignPath = path.join(__dirname, "network-design.html");
+const inventoryPath = path.join(__dirname, "inventory.html");
 
 function isAuthenticated(req) {
   return String(req.headers.cookie || "").split(";").map((item) => item.trim()).includes(authCookie);
@@ -162,6 +163,13 @@ const server = http.createServer((req, res) => {
 
   if (req.url === "/network-design" || req.url === "/network-design.html") {
     const html = fs.readFileSync(networkDesignPath, "utf8");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(html);
+    return;
+  }
+
+  if (req.url === "/inventory" || req.url === "/inventory.html") {
+    const html = fs.readFileSync(inventoryPath, "utf8");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(html);
     return;

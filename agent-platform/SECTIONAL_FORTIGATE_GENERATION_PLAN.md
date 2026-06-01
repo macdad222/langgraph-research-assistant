@@ -4,10 +4,6 @@
 
 Improve first-pass FortiGate draft quality by replacing one broad CLI generation call with smaller, specialized section-building tasks. The current model set remains in use: Gemma 4 31B for generation, review, and repair; Qwen 3.6 27B for refinement and final judging.
 
-## Current Status
-
-This flow is implemented behind `FORTIGATE_SECTIONAL_GENERATION_ENABLED`. When enabled, the graph branches after `analyze_change_impact`, runs the section builders in order, validates the section outputs, deterministically assembles `config_artifacts`, and then rejoins the normal validation, review, repair, Qwen refinement, and judge pipeline.
-
 ## Initial Scope
 
 Enable the flow behind `FORTIGATE_SECTIONAL_GENERATION_ENABLED=true`.

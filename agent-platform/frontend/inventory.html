@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Run Inventory</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --panel: #0f172a;
+      --line: #334155;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --ok: #86efac;
+      --warn: #fbbf24;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left, #0c4a6e 0, var(--bg) 42%); color: var(--text); }
+    header { padding: 22px 32px; border-bottom: 1px solid var(--line); background: rgba(15, 23, 42, .94); position: sticky; top: 0; z-index: 2; }
+    header > * { max-width: 1500px; margin-left: auto; margin-right: auto; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin: 0 0 12px; }
+    a { color: #7dd3fc; }
+    main { max-width: 1500px; margin: 0 auto; padding: 24px 32px 40px; display: grid; gap: 18px; }
+    .toolbar, .card { border: 1px solid rgba(148, 163, 184, .22); background: rgba(15, 23, 42, .94); border-radius: 18px; padding: 16px; box-shadow: 0 18px 45px rgba(0,0,0,.24); }
+    .toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+    label { display: block; color: #cbd5e1; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+    input, select { border: 1px solid var(--line); border-radius: 12px; padding: 10px 11px; color: var(--text); background: #020617; font: inherit; }
+    button { border: 0; border-radius: 12px; padding: 10px 12px; color: #06111f; background: var(--accent); font-weight: 800; cursor: pointer; }
+    button.secondary { background: #1f2937; color: var(--text); border: 1px solid var(--line); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .muted { color: var(--muted); }
+    .status { color: var(--muted); font-size: 14px; line-height: 1.45; }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+    .run-card { border: 1px solid rgba(148, 163, 184, .18); border-radius: 16px; padding: 14px; background: rgba(2, 6, 23, .42); }
+    .run-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 10px; }
+    .run-title { font-weight: 850; color: #dbeafe; }
+    .run-meta { color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+    .pill { display: inline-flex; padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; background: #020617; white-space: nowrap; }
+    .pill.ok { color: var(--ok); border-color: rgba(134, 239, 172, .35); }
+    .pill.warn { color: var(--warn); border-color: rgba(251, 191, 36, .38); }
+    .pill.bad { color: var(--danger); border-color: rgba(248, 113, 113, .38); }
+    .downloads { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; }
+    .details { margin-top: 10px; color: var(--muted); font-size: 13px; }
+    pre { overflow: auto; max-height: 360px; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: #020617; color: #cbd5e1; white-space: pre-wrap; font-size: 12px; }
+    @media (max-width: 760px) { main, header { padding-left: 16px; padding-right: 16px; } .grid { grid-template-columns: 1fr; } .toolbar { align-items: stretch; } .toolbar > * { width: 100%; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Run Inventory</h1>
+    <div class="muted">Download completed Network Design and FortiGate artifacts from persisted run records. <a href="/network-design">Network Design</a> · <a href="/fortigate">FortiGate</a></div>
+  </header>
+
+  <main>
+    <section class="toolbar">
+      <div>
+        <label for="limit">Runs To Load</label>
+        <select id="limit">
+          <option>20</option>
+          <option selected>50</option>
+          <option>100</option>
+        </select>
+      </div>
+      <div>
+        <label for="filter">Filter</label>
+        <input id="filter" placeholder="site, run id, status, thread..." />
+      </div>
+      <button id="refresh">Refresh Inventory</button>
+      <div id="status" class="status">Loading inventory...</div>
+    </section>
+
+    <section class="card">
+      <h2>Network Design Runs</h2>
+      <div id="network-runs" class="grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>FortiGate Config Runs</h2>
+      <div id="fortigate-runs" class="grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Raw Preview</h2>
+      <pre id="raw">{}</pre>
+    </section>
+  </main>
+
+  <script>
+    const apiBase = window.__API_BASE__ || "/api";
+    let networkRuns = [];
+    let fortigateRuns = [];
+    let networkDetails = new Map();
+    let fortigateDetails = new Map();
+
+    const statusEl = document.getElementById("status");
+    const rawEl = document.getElementById("raw");
+    const networkEl = document.getElementById("network-runs");
+    const fortigateEl = document.getElementById("fortigate-runs");
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
+    }
+
+    function slug(value) {
+      return String(value || "run")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80) || "run";
+    }
+
+    function downloadText(filename, content, type = "text/plain") {
+      const blob = new Blob([content], { type });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function fetchJson(path) {
+      const response = await fetch(`${apiBase}${path}`);
+      const text = await response.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { detail: text || response.statusText };
+      }
+      if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : response.statusText);
+      return data;
+    }
+
+    function fieldText(run, fields) {
+      return fields.map((field) => String(run?.[field] ?? "")).join(" ").toLowerCase();
+    }
+
+    function matchesFilter(run, type) {
+      const query = document.getElementById("filter").value.trim().toLowerCase();
+      if (!query) return true;
+      return fieldText(run, ["run_id", "thread_id", "site_name", "customer_name", "status", "judge_verdict", "model"]).includes(query) || type.includes(query);
+    }
+
+    function pillClass(status, okWhen = "pass") {
+      const value = String(status || "").toLowerCase();
+      if (value === okWhen || value === "completed" || value === "approved_artifact" || value === "ready_for_fortigate_handoff") return "ok";
+      if (value.includes("fail") || value.includes("block")) return "bad";
+      return "warn";
+    }
+
+    function fortigateDraftWarning(run) {
+      const verdict = run?.judge_report?.verdict || "not reviewed";
+      const runId = run?.run_id || "unknown";
+      return [
+        "# WARNING: DRAFT FORTIGATE CONFIGURATION - NOT APPROVED FOR DEPLOYMENT",
+        `# FortiGate run: ${runId}`,
+        `# Judge verdict: ${verdict}`,
+        "# This file still needs final human review before use.",
+        "# No device changes have been made by this system.",
+        "",
+      ].join("\n");
+    }
+
+    function bulletList(items) {
+      return (items || []).length ? items.map((item) => `- ${item}`).join("\n") : "- None";
+    }
+
+    function buildAuditMarkdown(networkRun, fortigateRun = null) {
+      const validation = networkRun?.validation_report || {};
+      const judge = fortigateRun?.judge_report || {};
+      return [
+        `# Network Design Audit: ${networkRun?.intake?.site_name || networkRun?.site_name || networkRun?.run_id}`,
+        "",
+        "## Network Design Run",
+        "",
+        `- Run ID: \`${networkRun?.run_id || ""}\``,
+        `- Created: ${networkRun?.created_at || ""}`,
+        `- Status: \`${networkRun?.status || ""}\``,
+        `- Thread: \`${networkRun?.thread_id || ""}\``,
+        `- Model: \`${networkRun?.model || ""}\``,
+        "",
+        "## Intake",
+        "",
+        "```json",
+        JSON.stringify(networkRun?.intake || {}, null, 2),
+        "```",
+        "",
+        "## Design Package",
+        "",
+        "```json",
+        JSON.stringify(networkRun?.design_package || {}, null, 2),
+        "```",
+        "",
+        "## FortiGate Handoff",
+        "",
+        "```json",
+        JSON.stringify(networkRun?.fortigate_handoff || {}, null, 2),
+        "```",
+        "",
+        "## Validation",
+        "",
+        `- Passed: \`${validation.passed}\``,
+        "",
+        "Blocking issues:",
+        bulletList(validation.blocking_issues || []),
+        "",
+        "Warnings:",
+        bulletList(validation.warnings || []),
+        "",
+        "Checks:",
+        bulletList(validation.checks || []),
+        "",
+        "## FortiGate Config Run",
+        "",
+        fortigateRun ? [
+          `- Run ID: \`${fortigateRun.run_id}\``,
+          `- Created: ${fortigateRun.created_at}`,
+          `- Status: \`${fortigateRun.status}\``,
+          `- Judge verdict: \`${judge.verdict || "not reviewed"}\``,
+          "",
+          "### Draft CLI",
+          "",
+          "```text",
+          fortigateRun.config_artifacts?.cli_config || "No CLI config stored.",
+          "```",
+          "",
+          "### Judge Findings",
+          "",
+          "Blocking issues:",
+          bulletList(judge.blocking_issues || []),
+          "",
+          "Warnings:",
+          bulletList(judge.warnings || []),
+          "",
+          "Recommended revisions:",
+          bulletList(judge.recommended_revisions || []),
+        ].join("\n") : "No associated FortiGate run was selected.",
+        "",
+        "## Execution Trace",
+        "",
+        "```json",
+        JSON.stringify({ network_design: networkRun?.execution_trace || [], fortigate: fortigateRun?.execution_trace || [] }, null, 2),
+        "```",
+      ].join("\n");
+    }
+
+    function associatedFortigateRuns(networkRun) {
+      const thread = networkRun?.thread_id || "";
+      const site = String(networkRun?.intake?.site_name || networkRun?.site_name || "").toLowerCase();
+      return fortigateRuns.filter((run) => {
+        const detail = fortigateDetails.get(run.run_id);
+        const runThread = run.thread_id || "";
+        const runSite = String(run.site_name || detail?.intake?.site_name || "").toLowerCase();
+        return (thread && runThread.startsWith(thread)) || (site && runSite === site);
+      });
+    }
+
+    async function ensureNetworkRun(runId) {
+      if (!networkDetails.has(runId)) networkDetails.set(runId, await fetchJson(`/network-design/runs/${runId}`));
+      return networkDetails.get(runId);
+    }
+
+    async function ensureFortigateRun(runId) {
+      if (!fortigateDetails.has(runId)) fortigateDetails.set(runId, await fetchJson(`/fortigate/runs/${runId}`));
+      return fortigateDetails.get(runId);
+    }
+
+    async function downloadNetwork(runId, kind) {
+      const run = await ensureNetworkRun(runId);
+      const base = slug(run.intake?.site_name || run.site_name || run.run_id);
+      const associated = associatedFortigateRuns(run)[0];
+      const fortigateRun = associated ? await ensureFortigateRun(associated.run_id) : null;
+      if (kind === "design") downloadText(`${base}-design-package.md`, run.markdown || JSON.stringify(run.design_package || {}, null, 2), "text/markdown");
+      if (kind === "handoff") downloadText(`${base}-fortigate-handoff.json`, JSON.stringify(run.fortigate_handoff || {}, null, 2), "application/json");
+      if (kind === "audit") downloadText(`${base}-audit.md`, buildAuditMarkdown(run, fortigateRun), "text/markdown");
+      if (kind === "json") downloadText(`${base}-network-design-run.json`, JSON.stringify(run, null, 2), "application/json");
+      rawEl.textContent = JSON.stringify({ network_design_run: run, associated_fortigate_run: fortigateRun }, null, 2);
+    }
+
+    async function downloadFortigate(runId, kind) {
+      const run = await ensureFortigateRun(runId);
+      const base = slug(run.intake?.site_name || run.site_name || run.run_id);
+      const cli = run.config_artifacts?.cli_config || "";
+      if (kind === "config") downloadText(`${base}-fortigate.conf`, run.judge_report?.verdict === "pass" ? cli : `${fortigateDraftWarning(run)}${cli}`, "text/plain");
+      if (kind === "markdown") downloadText(`${base}-fortigate-package.md`, run.markdown || JSON.stringify(run.config_artifacts || {}, null, 2), "text/markdown");
+      if (kind === "json") downloadText(`${base}-fortigate-run.json`, JSON.stringify(run, null, 2), "application/json");
+      rawEl.textContent = JSON.stringify({ fortigate_run: run }, null, 2);
+    }
+
+    function renderNetworkRuns() {
+      const runs = networkRuns.filter((run) => matchesFilter(run, "network"));
+      networkEl.innerHTML = runs.length ? runs.map((run) => {
+        const linked = associatedFortigateRuns(run);
+        return `
+          <article class="run-card">
+            <div class="run-head">
+              <div>
+                <div class="run-title">${escapeHtml(run.site_name || run.customer_name || run.run_id)}</div>
+                <div class="run-meta">${escapeHtml(run.created_at || "")}<br>${escapeHtml(run.run_id)}<br>${escapeHtml(run.thread_id || "")}</div>
+              </div>
+              <span class="pill ${pillClass(run.status, "ready_for_fortigate_handoff")}">${escapeHtml(run.status || "unknown")}</span>
+            </div>
+            <div class="run-meta">Standards: ${escapeHtml(run.standards_count ?? "n/a")} · Validation: ${run.validation_passed ? "passed" : "needs review"} · Associated FortiGate runs: ${linked.length}</div>
+            <div class="downloads">
+              <button data-network="${escapeHtml(run.run_id)}" data-kind="design">Design .md</button>
+              <button data-network="${escapeHtml(run.run_id)}" data-kind="handoff">Handoff .json</button>
+              <button data-network="${escapeHtml(run.run_id)}" data-kind="audit">Audit .md</button>
+              <button data-network="${escapeHtml(run.run_id)}" data-kind="json" class="secondary">Run .json</button>
+            </div>
+          </article>
+        `;
+      }).join("") : `<div class="status">No matching Network Design runs.</div>`;
+    }
+
+    function renderFortigateRuns() {
+      const runs = fortigateRuns.filter((run) => matchesFilter(run, "fortigate"));
+      fortigateEl.innerHTML = runs.length ? runs.map((run) => `
+        <article class="run-card">
+          <div class="run-head">
+            <div>
+              <div class="run-title">${escapeHtml(run.site_name || run.run_id)}</div>
+              <div class="run-meta">${escapeHtml(run.created_at || "")}<br>${escapeHtml(run.run_id)}<br>${escapeHtml(run.thread_id || "")}</div>
+            </div>
+            <span class="pill ${pillClass(run.status, "approved_artifact")}">${escapeHtml(run.status || "unknown")}</span>
+          </div>
+          <div class="run-meta">Request: ${escapeHtml(run.request_type || "n/a")} · Judge: ${escapeHtml(run.judge_verdict || "n/a")} · Validation: ${run.validation_passed ? "passed" : "needs review"}</div>
+          <div class="downloads">
+            <button data-fortigate="${escapeHtml(run.run_id)}" data-kind="config">Config .conf</button>
+            <button data-fortigate="${escapeHtml(run.run_id)}" data-kind="markdown">Package .md</button>
+            <button data-fortigate="${escapeHtml(run.run_id)}" data-kind="json" class="secondary">Run .json</button>
+          </div>
+        </article>
+      `).join("") : `<div class="status">No matching FortiGate runs.</div>`;
+    }
+
+    function wireDownloads() {
+      document.querySelectorAll("[data-network]").forEach((button) => {
+        button.addEventListener("click", () => downloadNetwork(button.dataset.network, button.dataset.kind).catch((error) => {
+          statusEl.textContent = `Download failed: ${error.message}`;
+        }));
+      });
+      document.querySelectorAll("[data-fortigate]").forEach((button) => {
+        button.addEventListener("click", () => downloadFortigate(button.dataset.fortigate, button.dataset.kind).catch((error) => {
+          statusEl.textContent = `Download failed: ${error.message}`;
+        }));
+      });
+    }
+
+    function renderInventory() {
+      renderNetworkRuns();
+      renderFortigateRuns();
+      wireDownloads();
+    }
+
+    async function refreshInventory() {
+      const limit = Number(document.getElementById("limit").value || 50);
+      statusEl.textContent = "Loading persisted runs...";
+      rawEl.textContent = "{}";
+      const [networkList, fortigateList] = await Promise.all([
+        fetchJson(`/network-design/runs?limit=${limit}`),
+        fetchJson(`/fortigate/runs?limit=${limit}`),
+      ]);
+      networkRuns = Array.isArray(networkList) ? networkList : [];
+      fortigateRuns = Array.isArray(fortigateList) ? fortigateList : [];
+      networkDetails = new Map();
+      fortigateDetails = new Map();
+      statusEl.textContent = `Loaded ${networkRuns.length} Network Design run(s) and ${fortigateRuns.length} FortiGate run(s).`;
+      renderInventory();
+    }
+
+    document.getElementById("refresh").addEventListener("click", () => refreshInventory().catch((error) => {
+      statusEl.textContent = `Inventory load failed: ${error.message}`;
+    }));
+    document.getElementById("filter").addEventListener("input", renderInventory);
+    document.getElementById("limit").addEventListener("change", () => refreshInventory().catch((error) => {
+      statusEl.textContent = `Inventory load failed: ${error.message}`;
+    }));
+
+    refreshInventory().catch((error) => {
+      statusEl.textContent = `Inventory load failed: ${error.message}`;
+    });
+  </script>
+</body>
+</html>
