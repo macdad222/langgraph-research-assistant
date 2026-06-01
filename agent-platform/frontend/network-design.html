@@ -576,6 +576,118 @@
       return payload?.error || fallback;
     }
 
+    function fgConfidenceClass(confidence) {
+      if (confidence === "high") return "ok";
+      if (confidence === "low") return "bad";
+      return "warn";
+    }
+
+    function renderFgInputReview(items) {
+      fortigateReviewCard.classList.remove("hidden");
+      fortigateReviewCard.innerHTML = `
+        <h3>Confirm Site Values</h3>
+        <div class="warning-block">These values were not specified in the design, so the model recommended a default for
+          each. Edit anything that is wrong (low-confidence items especially), then confirm. The FortiGate config is built
+          only after you confirm, and the renderer fills these in deterministically (no leftover placeholders).</div>
+        <div class="pills"><span class="pill warn">${(items || []).length} value(s) to confirm</span></div>
+        ${(items || []).map((item) => `
+          <div class="field question-card">
+            <label>${escapeHtml(item.prompt || item.token)}
+              <span class="pill ${fgConfidenceClass(item.confidence)}">${escapeHtml(item.confidence || "")}</span></label>
+            <input class="fg-ivr-input" data-token="${escapeHtml(item.token)}" value="${escapeHtml(item.recommended_value || "")}" />
+          </div>`).join("")}
+        <button id="confirm-fg-values">Confirm Values &amp; Build Config</button>
+      `;
+    }
+
+    function renderFgClarification(questions) {
+      fortigateReviewCard.classList.remove("hidden");
+      fortigateReviewCard.innerHTML = `
+        <h3>FortiGate Questions</h3>
+        <div class="warning-block">Answer what you can; blank answers let the model use sensible defaults.</div>
+        ${(questions || []).map((q, idx) => {
+          const field = q.field || q.question_id || `q_${idx}`;
+          return `
+          <div class="field question-card">
+            <label>${escapeHtml(q.question || field)}</label>
+            ${q.reason ? `<div class="status">${escapeHtml(q.reason)}</div>` : ""}
+            <input class="fg-clar-input" data-field="${escapeHtml(field)}" />
+          </div>`;
+        }).join("")}
+        <button id="confirm-fg-clar">Submit Answers</button>
+      `;
+    }
+
+    function fgWaitForClick(buttonId, collect) {
+      return new Promise((resolve) => {
+        const handler = (event) => {
+          if (!event.target.closest(`#${buttonId}`)) return;
+          document.removeEventListener("click", handler);
+          resolve(collect());
+        };
+        document.addEventListener("click", handler);
+      });
+    }
+
+    function collectFgInputReview() {
+      return Array.from(document.querySelectorAll(".fg-ivr-input")).reduce((acc, el) => {
+        acc[el.dataset.token] = el.value;
+        return acc;
+      }, {});
+    }
+
+    function collectFgClarification() {
+      return Array.from(document.querySelectorAll(".fg-clar-input")).reduce((acc, el) => {
+        if (el.value.trim()) acc[el.dataset.field] = el.value.trim();
+        return acc;
+      }, {});
+    }
+
+    async function postFgInteractive(path, body) {
+      const response = await fetch(`${apiBase}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(data.detail || response.statusText);
+      rawEl.textContent = JSON.stringify(data, null, 2);
+      return data;
+    }
+
+    async function runInteractiveFortiGate(intake, onStatus) {
+      let resp = await postFgInteractive("/fortigate/interactive", {
+        intake,
+        existing_config: "",
+        thread_id: `${currentRun?.thread_id || "network-design"}-${Date.now()}-fg`,
+        mode: "interactive"
+      });
+      const threadId = resp.thread_id;
+      let guard = 0;
+      while (resp.status !== "completed" && guard++ < 25) {
+        onStatus?.(resp.status);
+        if (resp.status === "awaiting_clarification") {
+          renderFgClarification(resp.questions || []);
+          const answers = await fgWaitForClick("confirm-fg-clar", collectFgClarification);
+          onStatus?.("designing...");
+          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { answers });
+        } else if (resp.status === "awaiting_input_review") {
+          renderFgInputReview(resp.input_review || []);
+          const values = await fgWaitForClick("confirm-fg-values", collectFgInputReview);
+          onStatus?.("applying values & rendering...");
+          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { values });
+        } else if (resp.status === "awaiting_review") {
+          onStatus?.("finalizing config...");
+          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { decision: "approved", reviewer_notes: "auto-approved after value review" });
+        } else {
+          throw new Error(`Unexpected interactive status: ${resp.status}`);
+        }
+      }
+      if (resp.status !== "completed" || !resp.run) throw new Error("Interactive FortiGate flow did not complete.");
+      fortigateReviewCard.classList.add("hidden");
+      return resp.run;
+    }
+
     async function startFortiGateDesignJob(payload, onUpdate) {
       const startResponse = await fetch(`${apiBase}/fortigate/design/jobs`, {
         method: "POST",
@@ -1471,21 +1583,15 @@
       exportStatusEl.textContent = "Starting FortiGate configuration artifact job and Qwen judge pass.";
       statusEl.textContent = "FortiGate generation job is starting.";
       try {
-        const { job, run } = await startFortiGateDesignJob(
-          {
-            intake: currentHandoff,
-            existing_config: "",
-            thread_id: `${currentRun?.thread_id || "network-design"}-${Date.now()}-fortigate-export`,
-            mode: "artifact"
-          },
-          (job) => {
-            exportStatusEl.textContent = `FortiGate job ${job.status}: ${job.job_id}`;
-            statusEl.textContent = "FortiGate generation is running in the background. This page is polling for completion.";
-            rawEl.textContent = JSON.stringify(job, null, 2);
+        const run = await runInteractiveFortiGate(
+          currentHandoff,
+          (phase) => {
+            exportStatusEl.textContent = `FortiGate: ${phase}`;
+            statusEl.textContent = "FortiGate interactive design in progress (you will be asked to confirm site values).";
           }
         );
         renderFortiGateRun(run);
-        exportStatusEl.textContent = `FortiGate config generated: ${run.run_id} from job ${job.job_id}`;
+        exportStatusEl.textContent = `FortiGate config generated: ${run.run_id}`;
       } catch (error) {
         exportStatusEl.textContent = `Browser error: ${error.message}`;
         statusEl.textContent = "Browser error while generating FortiGate config.";
