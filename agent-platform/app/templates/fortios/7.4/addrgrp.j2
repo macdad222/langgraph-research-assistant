@@ -1,0 +1,10 @@
+config firewall addrgrp
+{% for g in address_groups %}
+    edit "{{ g.name }}"
+        set member {{ g.members | names }}
+{% if g.comment %}
+        set comment "{{ g.comment }}"
+{% endif %}
+    next
+{% endfor %}
+end

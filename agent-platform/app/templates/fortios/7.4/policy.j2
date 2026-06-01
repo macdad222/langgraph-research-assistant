@@ -1,0 +1,43 @@
+config firewall policy
+{% for p in firewall_policies %}
+    edit {{ p.policyid if p.policyid is not none else loop.index }}
+        set name "{{ p.name }}"
+        set srcintf {{ p.srcintf | names }}
+        set dstintf {{ p.dstintf | names }}
+        set srcaddr {{ p.srcaddr | names }}
+        set dstaddr {{ p.dstaddr | names }}
+        set action {{ p.action }}
+        set schedule "{{ p.schedule }}"
+        set service {{ p.service | names }}
+        set logtraffic {{ p.logtraffic }}
+{% if p.action == 'accept' and p.nat %}
+        set nat enable
+{% if p.poolname %}
+        set ippool enable
+        set poolname "{{ p.poolname }}"
+{% endif %}
+{% endif %}
+{% if p.av_profile or p.ips_sensor or p.application_list or p.webfilter_profile %}
+        set utm-status enable
+{% endif %}
+{% if p.av_profile %}
+        set av-profile "{{ p.av_profile }}"
+{% endif %}
+{% if p.ips_sensor %}
+        set ips-sensor "{{ p.ips_sensor }}"
+{% endif %}
+{% if p.application_list %}
+        set application-list "{{ p.application_list }}"
+{% endif %}
+{% if p.webfilter_profile %}
+        set webfilter-profile "{{ p.webfilter_profile }}"
+{% endif %}
+{% if p.ssl_ssh_profile %}
+        set ssl-ssh-profile "{{ p.ssl_ssh_profile }}"
+{% endif %}
+{% if p.comments %}
+        set comments "{{ p.comments }}"
+{% endif %}
+    next
+{% endfor %}
+end

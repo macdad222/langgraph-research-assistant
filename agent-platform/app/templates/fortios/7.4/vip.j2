@@ -1,0 +1,21 @@
+config firewall vip
+{% for v in vips %}
+    edit "{{ v.name }}"
+        set extip {{ v.extip | val }}
+        set mappedip "{{ v.mappedip | val }}"
+{% if v.extintf %}
+        set extintf "{{ v.extintf }}"
+{% endif %}
+{% if v.portforward %}
+        set portforward enable
+        set protocol {{ v.protocol }}
+{% if v.extport %}
+        set extport {{ v.extport }}
+{% endif %}
+{% if v.mappedport %}
+        set mappedport {{ v.mappedport }}
+{% endif %}
+{% endif %}
+    next
+{% endfor %}
+end

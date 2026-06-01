@@ -1,0 +1,7 @@
+config firewall service group
+{% for g in service_groups %}
+    edit "{{ g.name }}"
+        set member {{ g.members | names }}
+    next
+{% endfor %}
+end

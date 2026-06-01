@@ -1,0 +1,95 @@
+config system sdwan
+    set status {{ 'enable' if sdwan.status else 'disable' }}
+{% if sdwan.load_balance_mode %}
+    set load-balance-mode {{ sdwan.load_balance_mode }}
+{% endif %}
+{% if sdwan.zones %}
+    config zone
+{% for z in sdwan.zones %}
+        edit "{{ z.name }}"
+        next
+{% endfor %}
+    end
+{% endif %}
+{% if sdwan.members %}
+    config members
+{% for m in sdwan.members %}
+        edit {{ m.seq_num }}
+            set interface "{{ m.interface }}"
+{% if m.gateway is not none %}
+            set gateway {{ m.gateway | val }}
+{% endif %}
+{% if m.zone %}
+            set zone "{{ m.zone }}"
+{% endif %}
+{% if m.source is not none %}
+            set source {{ m.source | val }}
+{% endif %}
+        next
+{% endfor %}
+    end
+{% endif %}
+{% if sdwan.health_checks %}
+    config health-check
+{% for h in sdwan.health_checks %}
+        edit "{{ h.name }}"
+{% if h.server %}
+            set server {{ h.server | qvals }}
+{% endif %}
+            set protocol {{ h.protocol }}
+{% if h.members %}
+            set members {{ h.members | join(' ') }}
+{% endif %}
+{% if h.sla %}
+            config sla
+{% for s in h.sla %}
+                edit {{ s.id }}
+{% if s.latency_threshold is not none %}
+                    set latency-threshold {{ s.latency_threshold }}
+{% endif %}
+{% if s.jitter_threshold is not none %}
+                    set jitter-threshold {{ s.jitter_threshold }}
+{% endif %}
+{% if s.packetloss_threshold is not none %}
+                    set packetloss-threshold {{ s.packetloss_threshold }}
+{% endif %}
+                next
+{% endfor %}
+            end
+{% endif %}
+        next
+{% endfor %}
+    end
+{% endif %}
+{% if sdwan.services %}
+    config service
+{% for svc in sdwan.services %}
+        edit {{ svc.id }}
+            set name "{{ svc.name }}"
+{% if svc.dst %}
+            set dst {{ svc.dst | names }}
+{% endif %}
+{% if svc.src %}
+            set src {{ svc.src | names }}
+{% endif %}
+            set mode {{ svc.mode }}
+{% if svc.health_check %}
+            set health-check "{{ svc.health_check }}"
+{% endif %}
+{% if svc.sla %}
+            config sla
+{% for s in svc.sla %}
+                edit "{{ s.health_check }}"
+                    set id {{ s.id }}
+                next
+{% endfor %}
+            end
+{% endif %}
+{% if svc.priority_members %}
+            set priority-members {{ svc.priority_members | join(' ') }}
+{% endif %}
+        next
+{% endfor %}
+    end
+{% endif %}
+end

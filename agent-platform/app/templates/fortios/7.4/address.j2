@@ -1,0 +1,21 @@
+config firewall address
+{% for a in address_objects %}
+    edit "{{ a.name }}"
+{% if a.type == 'iprange' %}
+        set type iprange
+        set start-ip {{ a.start_ip | val }}
+        set end-ip {{ a.end_ip | val }}
+{% elif a.type == 'fqdn' %}
+        set type fqdn
+        set fqdn "{{ a.fqdn }}"
+{% elif a.type == 'geography' %}
+        set type geography
+{% else %}
+        set subnet {{ a.subnet | val }}
+{% endif %}
+{% if a.comment %}
+        set comment "{{ a.comment }}"
+{% endif %}
+    next
+{% endfor %}
+end

@@ -14,3 +14,4 @@ neo4j
 pypdf
 numpy
 sentence-transformers
+jinja2

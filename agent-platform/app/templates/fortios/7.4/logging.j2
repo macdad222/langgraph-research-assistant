@@ -1,0 +1,23 @@
+{% if logging.syslog_servers %}
+{% for s in logging.syslog_servers %}
+config log syslogd{{ '' if loop.index == 1 else loop.index }} setting
+    set status enable
+    set server {{ s.server | val }}
+{% if s.port is not none %}
+    set port {{ s.port }}
+{% endif %}
+{% if s.mode %}
+    set mode {{ s.mode }}
+{% endif %}
+end
+{% endfor %}
+{% endif %}
+{% if logging.fortianalyzer %}
+config log fortianalyzer setting
+    set status enable
+    set server {{ logging.fortianalyzer.server | val }}
+{% if logging.fortianalyzer.upload_option %}
+    set upload-option {{ logging.fortianalyzer.upload_option }}
+{% endif %}
+end
+{% endif %}

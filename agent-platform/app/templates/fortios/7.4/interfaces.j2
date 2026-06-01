@@ -1,0 +1,28 @@
+config system interface
+{% for i in interfaces %}
+    edit "{{ i.name }}"
+        set vdom "root"
+{% if i.vlan_id is not none %}
+        set type vlan
+        set interface "{{ i.parent_interface }}"
+        set vlanid {{ i.vlan_id }}
+{% endif %}
+{% if i.mode == 'dhcp' %}
+        set mode dhcp
+{% elif i.mode == 'pppoe' %}
+        set mode pppoe
+{% elif i.ip is not none %}
+        set ip {{ i.ip | val }}
+{% endif %}
+{% if i.allowaccess %}
+        set allowaccess {{ i.allowaccess | join(' ') }}
+{% endif %}
+{% if i.role and i.role != 'undefined' %}
+        set role {{ i.role }}
+{% endif %}
+{% if i.description %}
+        set description "{{ i.description }}"
+{% endif %}
+    next
+{% endfor %}
+end

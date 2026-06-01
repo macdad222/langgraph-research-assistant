@@ -1,0 +1,10 @@
+config system zone
+{% for z in zones %}
+    edit "{{ z.name }}"
+        set intrazone {{ z.intrazone }}
+{% if z.interfaces %}
+        set interface {{ z.interfaces | names }}
+{% endif %}
+    next
+{% endfor %}
+end

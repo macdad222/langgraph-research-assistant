@@ -1,0 +1,23 @@
+config router static
+{% for r in static_routes %}
+    edit {{ r.seq_num if r.seq_num is not none else loop.index }}
+        set dst {{ r.dst }}
+{% if r.sdwan_zone %}
+        set sdwan-zone "{{ r.sdwan_zone }}"
+{% else %}
+{% if r.gateway is not none %}
+        set gateway {{ r.gateway | val }}
+{% endif %}
+{% if r.device %}
+        set device "{{ r.device }}"
+{% endif %}
+{% endif %}
+{% if r.distance %}
+        set distance {{ r.distance }}
+{% endif %}
+{% if r.comment %}
+        set comment "{{ r.comment }}"
+{% endif %}
+    next
+{% endfor %}
+end

@@ -1,0 +1,23 @@
+config system dhcp server
+{% for d in dhcp_servers %}
+    edit {{ loop.index }}
+        set status enable
+        set interface "{{ d.interface }}"
+        set default-gateway {{ d.gateway | val }}
+        set netmask {{ d.netmask }}
+        set lease-time {{ d.lease_time }}
+{% if d.dns %}
+        set dns-service specify
+{% for ns in d.dns %}
+        set dns-server{{ loop.index }} {{ ns | val }}
+{% endfor %}
+{% endif %}
+        config ip-range
+            edit 1
+                set start-ip {{ d.range_start | val }}
+                set end-ip {{ d.range_end | val }}
+            next
+        end
+    next
+{% endfor %}
+end
