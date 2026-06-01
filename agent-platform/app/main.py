@@ -2877,6 +2877,15 @@ async def fortigate_interactive(request: FortiGateDesignRequest):
             questions=review.get("questions", []),
             run=None,
         )
+    if review and review.get("stage") == "fortigate_input_review":
+        return FortiGateInteractiveResponse(
+            status="awaiting_input_review",
+            thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            questions=[],
+            input_review=review.get("items", []),
+            run=None,
+        )
     if review:
         return FortiGateInteractiveResponse(
             status="awaiting_review",
@@ -2902,6 +2911,8 @@ async def fortigate_interactive_resume(thread_id: str, payload: dict[str, Any]):
     review = _interrupt_payload(result)
     if review and review.get("stage") == "fortigate_clarification":
         return FortiGateInteractiveResponse(status="awaiting_clarification", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=review.get("questions", []), run=None)
+    if review and review.get("stage") == "fortigate_input_review":
+        return FortiGateInteractiveResponse(status="awaiting_input_review", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], input_review=review.get("items", []), run=None)
     if review:
         return FortiGateInteractiveResponse(status="awaiting_review", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=None)
     response = fortigate_response_from_state(result, thread_id, app.state.model_name)

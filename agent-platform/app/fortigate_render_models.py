@@ -66,6 +66,24 @@ def collect_placeholders(obj: Any, found: Optional[dict[str, str]] = None) -> di
     return found
 
 
+def substitute_placeholder_dicts(node: Any, values: dict[str, Any]) -> Any:
+    """Recursively replace serialized Placeholder dicts ({"token": ...}) whose
+    token is present in ``values`` with the mapped value. Placeholders without a
+    provided value are left intact so they remain visible as unresolved inputs.
+    Returns a new structure; the input is not mutated."""
+    if isinstance(node, dict):
+        keys = set(node.keys())
+        if "token" in node and keys <= {"token", "human_prompt"}:
+            token = node.get("token")
+            if token in values and values[token] not in (None, ""):
+                return values[token]
+            return dict(node)
+        return {k: substitute_placeholder_dicts(v, values) for k, v in node.items()}
+    if isinstance(node, list):
+        return [substitute_placeholder_dicts(item, values) for item in node]
+    return node
+
+
 # --- reference helpers ----------------------------------------------------------------
 
 PHYSICAL_PORT_RE = re.compile(
@@ -141,7 +159,7 @@ class AddressObjectModel(BaseModel):
 
 class AddressGroupModel(BaseModel):
     name: str = Field(..., min_length=1)
-    members: list[str] = Field(default_factory=list)
+    members: list[Value] = Field(default_factory=list)
     comment: str = ""
 
 
@@ -155,7 +173,7 @@ class ServiceObjectModel(BaseModel):
 
 class ServiceGroupModel(BaseModel):
     name: str = Field(..., min_length=1)
-    members: list[str] = Field(default_factory=list)
+    members: list[Value] = Field(default_factory=list)
 
 
 class VipModel(BaseModel):
@@ -254,7 +272,7 @@ class FirewallPolicyModel(BaseModel):
 
 class SyslogServerModel(BaseModel):
     server: Value
-    port: Optional[int] = None
+    port: Optional[Union[int, Placeholder]] = None
     mode: Literal["udp", "legacy-reliable", "reliable", ""] = ""
 
 
@@ -390,6 +408,21 @@ class FortiGateConfigModel(BaseModel):
                 route.sdwan_zone = route.device
                 route.device = ""
 
+        # Auto-resolve a FortiOS namespace collision: a firewall zone that shares a name
+        # with an sd-wan zone cannot coexist. Drop the redundant firewall zone; policy
+        # interface references still resolve because intf_refs includes sd-wan zone names.
+        if sdwan_zone_names:
+            kept_zones = [z for z in self.zones if z.name not in sdwan_zone_names]
+            if len(kept_zones) != len(self.zones):
+                self.zones = kept_zones
+                zone_names = {z.name for z in self.zones}
+
+        # Tolerate the LLM using the address special 'all' for a policy interface; FortiOS
+        # uses 'any' to mean "every interface" in srcintf/dstintf.
+        for pol in self.firewall_policies:
+            pol.srcintf = ["any" if x == "all" else x for x in pol.srcintf]
+            pol.dstintf = ["any" if x == "all" else x for x in pol.dstintf]
+
         # interfaces: vlan needs a parent; parent must resolve.
         for iface in self.interfaces:
             if iface.vlan_id is not None and not iface.parent_interface:
@@ -420,12 +453,16 @@ class FortiGateConfigModel(BaseModel):
         # address groups: members must resolve to address objects/groups.
         for grp in self.address_groups:
             for member in grp.members:
+                if isinstance(member, Placeholder):
+                    continue
                 if member not in addr_names and member not in ADDRESS_SPECIAL:
                     errors.append(f"address group '{grp.name}': member '{member}' is not a defined address")
 
         # service groups: members must resolve.
         for grp in self.service_groups:
             for member in grp.members:
+                if isinstance(member, Placeholder):
+                    continue
                 if member not in service_names and member.upper() not in BUILTIN_SERVICES:
                     errors.append(f"service group '{grp.name}': member '{member}' is not a defined service")
 

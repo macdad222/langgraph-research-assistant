@@ -156,3 +156,69 @@ async def build_config_model(
             prior_error = str(exc)
             errors.append(prior_error)
     return None, errors
+
+
+RECOMMEND_GUIDE = """You are a senior FortiGate network engineer filling in the unknown
+site-specific values for a configuration that has already been designed. For EACH requested
+value, propose one sensible, production-reasonable default that is consistent with the design
+context and with the other values you propose. Return ONLY JSON in this exact shape:
+{"recommendations": {"<TOKEN>": {"value": "<cli value>", "confidence": "high|medium|low"}}}
+
+Rules:
+- Use RFC1918 ranges for private subnets/IPs; keep per-network subnets non-overlapping.
+- VLAN IDs: small distinct integers (e.g. 10, 20, 30) aligned to each network's purpose.
+- Netmasks / route subnets in FortiOS form (e.g. "10.10.10.0 255.255.255.0").
+- DHCP ranges must sit inside their matching subnet.
+- DNS: reputable public resolvers (e.g. 1.1.1.1 / 8.8.8.8) unless the context says otherwise.
+- SD-WAN SLA thresholds: typical latency(ms)/jitter(ms)/packet-loss(%) integers.
+- Pre-shared keys / secrets: generate a strong random value and set confidence "low".
+- Externally-assigned values (public WAN IP, ISP gateway, remote VPN peer): give a clearly
+  in-range EXAMPLE and set confidence "low" so the operator knows to confirm it.
+- The value MUST be only the literal CLI token(s), no commentary, no quotes around it."""
+
+
+async def recommend_placeholder_values(
+    invoke: InvokeFn,
+    context: dict[str, Any],
+    placeholders: dict[str, str],
+    *,
+    run_name: str = "recommend_input_values",
+) -> list[dict[str, str]]:
+    """Ask the model to recommend a value for every placeholder token.
+
+    Returns a list of {token, prompt, recommended_value, confidence} preserving
+    placeholder order. Never raises; missing recommendations fall back to blank."""
+    if not placeholders:
+        return []
+    items = [{"token": t, "prompt": p} for t, p in placeholders.items()]
+    human = json.dumps({"design_context": context, "values_needed": items}, indent=2, default=str)
+    recs: dict[str, Any] = {}
+    try:
+        content = await invoke(RECOMMEND_GUIDE, human, run_name)
+        data = _extract_json(content)
+        candidate = data.get("recommendations")
+        if isinstance(candidate, dict):
+            recs = candidate
+    except Exception:
+        recs = {}
+    out: list[dict[str, str]] = []
+    for token, prompt in placeholders.items():
+        entry = recs.get(token)
+        if isinstance(entry, dict):
+            value = str(entry.get("value", "") or "")
+            confidence = str(entry.get("confidence", "medium") or "medium")
+        elif entry not in (None, ""):
+            value = str(entry)
+            confidence = "medium"
+        else:
+            value = ""
+            confidence = "low"
+        out.append(
+            {
+                "token": token,
+                "prompt": prompt,
+                "recommended_value": value,
+                "confidence": confidence,
+            }
+        )
+    return out

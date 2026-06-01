@@ -68,11 +68,19 @@ class FortiGateDesignRequest(BaseModel):
     seed_standards: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class FortiGateInputReviewItem(BaseModel):
+    token: str
+    prompt: str = ""
+    recommended_value: str = ""
+    confidence: str = "medium"
+
+
 class FortiGateInteractiveResponse(BaseModel):
     status: str
     thread_id: str
     checkpoint_thread_id: str
     questions: list[FortiGateQuestion] = Field(default_factory=list)
+    input_review: list[FortiGateInputReviewItem] = Field(default_factory=list)
     run: Optional["FortiGateRunResponse"] = None
 
 

@@ -564,6 +564,115 @@
       statusEl.textContent = "Standards search complete.";
     });
 
+    function confidenceClass(confidence) {
+      if (confidence === "high") return "ok";
+      if (confidence === "low") return "bad";
+      return "warn";
+    }
+
+    function renderInputReviewForm(items) {
+      const rows = (items || []).map((item) => `
+        <label style="display:block;margin:10px 0;">
+          <span style="display:block;margin-bottom:4px;">${escapeHtml(item.prompt || item.token)}
+            <span class="pill ${confidenceClass(item.confidence)}">${escapeHtml(item.confidence || "")}</span></span>
+          <input class="ivr-input" data-token="${escapeHtml(item.token)}" value="${escapeHtml(item.recommended_value || "")}"
+            style="width:100%;padding:6px;box-sizing:border-box;" />
+        </label>`).join("");
+      outputEl.innerHTML = `
+        <div class="section review-panel" id="interactive-panel">
+          <h2>Review site values</h2>
+          <span class="pill warn">${(items || []).length} value(s) to confirm</span>
+          <p class="muted">Each unknown site value below was pre-filled with a recommended default. Edit anything that is
+            wrong (low-confidence items especially), then confirm. The design package is generated only after you confirm,
+            and the renderer fills these into the CLI deterministically.</p>
+          ${rows}
+          <button id="confirm-values" class="primary" style="margin-top:10px;">Confirm values &amp; build package</button>
+        </div>`;
+    }
+
+    function renderClarificationForm(questions) {
+      const rows = (questions || []).map((q, idx) => {
+        const field = q.field || q.question_id || `q_${idx}`;
+        return `
+        <label style="display:block;margin:10px 0;">
+          <span style="display:block;margin-bottom:4px;">${escapeHtml(q.question || field)}</span>
+          ${q.reason ? `<span class="muted" style="display:block;margin-bottom:4px;">${escapeHtml(q.reason)}</span>` : ""}
+          <input class="clar-input" data-field="${escapeHtml(field)}" style="width:100%;padding:6px;box-sizing:border-box;" />
+        </label>`;
+      }).join("");
+      outputEl.innerHTML = `
+        <div class="section review-panel" id="interactive-panel">
+          <h2>A few questions first</h2>
+          <p class="muted">Answer what you can. Blank answers let the model use sensible defaults.</p>
+          ${rows}
+          <button id="submit-clarification" class="primary" style="margin-top:10px;">Submit answers</button>
+        </div>`;
+    }
+
+    function waitForClick(buttonId, collect) {
+      return new Promise((resolve) => {
+        const handler = (event) => {
+          if (!event.target.closest(`#${buttonId}`)) return;
+          document.removeEventListener("click", handler);
+          resolve(collect());
+        };
+        document.addEventListener("click", handler);
+      });
+    }
+
+    function collectInputReview() {
+      return Array.from(document.querySelectorAll(".ivr-input")).reduce((acc, el) => {
+        acc[el.dataset.token] = el.value;
+        return acc;
+      }, {});
+    }
+
+    function collectClarification() {
+      return Array.from(document.querySelectorAll(".clar-input")).reduce((acc, el) => {
+        if (el.value.trim()) acc[el.dataset.field] = el.value.trim();
+        return acc;
+      }, {});
+    }
+
+    async function postInteractive(path, body) {
+      const response = await fetch(`${apiBase}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(data.detail || response.statusText);
+      rawEl.textContent = JSON.stringify(data, null, 2);
+      return data;
+    }
+
+    async function runInteractiveDesign(payload, onStatus) {
+      let resp = await postInteractive("/fortigate/interactive", { ...payload, mode: "interactive" });
+      const threadId = resp.thread_id;
+      let guard = 0;
+      while (resp.status !== "completed" && guard++ < 25) {
+        onStatus?.(resp.status);
+        if (resp.status === "awaiting_clarification") {
+          renderClarificationForm(resp.questions || []);
+          const answers = await waitForClick("submit-clarification", collectClarification);
+          onStatus?.("designing...");
+          resp = await postInteractive(`/fortigate/interactive/${threadId}/resume`, { answers });
+        } else if (resp.status === "awaiting_input_review") {
+          renderInputReviewForm(resp.input_review || []);
+          const values = await waitForClick("confirm-values", collectInputReview);
+          onStatus?.("applying values & rendering...");
+          resp = await postInteractive(`/fortigate/interactive/${threadId}/resume`, { values });
+        } else if (resp.status === "awaiting_review") {
+          onStatus?.("finalizing package...");
+          resp = await postInteractive(`/fortigate/interactive/${threadId}/resume`, { decision: "approved", reviewer_notes: "auto-approved after value review" });
+        } else {
+          throw new Error(`Unexpected interactive status: ${resp.status}`);
+        }
+      }
+      if (resp.status !== "completed" || !resp.run) throw new Error("Interactive flow did not complete.");
+      return resp.run;
+    }
+
     document.getElementById("run-design").addEventListener("click", async () => {
       if (!document.getElementById("intent").value.trim()) {
         statusEl.textContent = "Business intent is required.";
@@ -571,21 +680,18 @@
       }
       const button = document.getElementById("run-design");
       button.disabled = true;
-      statusEl.textContent = "Starting FortiGate artifact job...";
+      statusEl.textContent = "Starting interactive FortiGate design...";
       try {
-        const { job, run } = await startFortiGateDesignJob(
+        const run = await runInteractiveDesign(
           {
             intake: intake(),
             existing_config: document.getElementById("existing-config").value,
             thread_id: document.getElementById("thread-id").value || undefined
           },
-          (job) => {
-            statusEl.textContent = `FortiGate job ${job.status}: ${job.job_id}`;
-            rawEl.textContent = JSON.stringify(job, null, 2);
-          }
+          (phase) => { statusEl.textContent = `FortiGate: ${phase}`; }
         );
         renderRun(run);
-        statusEl.textContent = `Draft package generated: ${run.run_id} from job ${job.job_id}`;
+        statusEl.textContent = `Package generated: ${run.run_id}`;
       } catch (error) {
         statusEl.textContent = `Browser error: ${error.message}`;
         rawEl.textContent = String(error.stack || error);

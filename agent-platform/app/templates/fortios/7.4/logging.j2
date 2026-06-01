@@ -4,7 +4,7 @@ config log syslogd{{ '' if loop.index == 1 else loop.index }} setting
     set status enable
     set server {{ s.server | val }}
 {% if s.port is not none %}
-    set port {{ s.port }}
+    set port {{ s.port | val }}
 {% endif %}
 {% if s.mode %}
     set mode {{ s.mode }}

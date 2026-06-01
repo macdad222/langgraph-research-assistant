@@ -20,10 +20,11 @@ from app.fortigate_models import (
 )
 from app.fortigate_policy import check_cli_completeness, check_intent_completeness, check_section_completeness, check_standards_compliance, review_risk, validate_config_artifacts
 from app.standards import retrieve_fortigate_standards
-from app.fortigate_render_models import FortiGateConfigModel
+from app.fortigate_render_models import FortiGateConfigModel, collect_placeholders, substitute_placeholder_dicts
 from app.fortigate_renderer import render_config
 from app.fortigate_config_builder import build_config_model as build_fortigate_config_model
 from app.fortigate_config_builder import normalize_fortios_version
+from app.fortigate_config_builder import recommend_placeholder_values
 
 
 class FortiGateState(TypedDict, total=False):
@@ -41,6 +42,8 @@ class FortiGateState(TypedDict, total=False):
     change_impact: dict[str, Any]
     config_sections: dict[str, Any]
     config_model: dict[str, Any]
+    input_recommendations: list[dict[str, Any]]
+    input_values: dict[str, Any]
     renderer_active: bool
     renderer_fallback: bool
     config_artifacts: dict[str, Any]
@@ -1169,6 +1172,61 @@ def build_fortigate_graph(
             f"Rendered FortiGate CLI deterministically ({artifacts.get('rendered_by', '')}).",
         )
 
+    async def recommend_input_values(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        if not state.get("renderer_active"):
+            return _trace_update(state, {"input_recommendations": []}, "recommend_input_values", started_at, started_perf, "Renderer inactive; no input recommendations.", branch="skip")
+        try:
+            model_obj = FortiGateConfigModel(**state.get("config_model", {}))
+        except Exception:
+            return _trace_update(state, {"input_recommendations": []}, "recommend_input_values", started_at, started_perf, "Config model unavailable; skipped recommendations.", branch="skip")
+        placeholders = collect_placeholders(model_obj)
+        if not placeholders:
+            return _trace_update(state, {"input_recommendations": []}, "recommend_input_values", started_at, started_perf, "No site values require input.", branch="none")
+        recs = await recommend_placeholder_values(_render_invoke, _render_context(state), placeholders)
+        return _trace_update(state, {"input_recommendations": recs}, "recommend_input_values", started_at, started_perf, f"Recommended values for {len(recs)} site value(s).")
+
+    async def input_value_review(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        recs = state.get("input_recommendations") or []
+        if not state.get("renderer_active") or not recs:
+            return _trace_update(state, {}, "input_value_review", started_at, started_perf, "No site values to review.", branch="skip")
+        values: dict[str, Any] = {
+            rec["token"]: rec.get("recommended_value")
+            for rec in recs
+            if rec.get("recommended_value") not in (None, "")
+        }
+        if human_review_interrupt:
+            answers = interrupt({"stage": "fortigate_input_review", "items": recs, "intake": state.get("intake", {})})
+            if isinstance(answers, dict):
+                provided = answers.get("values")
+                if not isinstance(provided, dict):
+                    provided = answers.get("answers") if isinstance(answers.get("answers"), dict) else answers
+                for key, val in (provided or {}).items():
+                    if val not in (None, ""):
+                        values[key] = val
+        new_model_dict = substitute_placeholder_dicts(state.get("config_model", {}), values)
+        try:
+            model_obj = FortiGateConfigModel(**new_model_dict)
+            artifacts = render_config(model_obj)
+        except Exception as exc:
+            return _trace_update(state, {"input_values": values}, "input_value_review", started_at, started_perf, f"Could not apply reviewed values: {exc}", branch="error")
+        human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
+        return _trace_update(
+            state,
+            {
+                "config_model": model_obj.model_dump(mode="json"),
+                "config_artifacts": artifacts,
+                "requires_human_input": human_inputs,
+                "input_values": values,
+            },
+            "input_value_review",
+            started_at,
+            started_perf,
+            f"Applied {len(values)} reviewed value(s); {len(human_inputs)} placeholder(s) remain.",
+            branch="applied",
+        )
+
     def route_after_change_impact(state: FortiGateState) -> str:
         if renderer_enabled:
             return "renderer"
@@ -1519,6 +1577,16 @@ def build_fortigate_graph(
                     f"Patch-model failed ({len(errors)} error(s)); kept prior rendered artifacts.",
                     branch="no-op",
                 )
+            # Re-apply operator-confirmed site values: the patched model is rebuilt from the
+            # implementation intent, which still carries placeholders, so without this the
+            # judge revision would silently discard values the user already reviewed.
+            input_values = state.get("input_values") or {}
+            if input_values:
+                patched = substitute_placeholder_dicts(model_obj.model_dump(mode="json"), input_values)
+                try:
+                    model_obj = FortiGateConfigModel(**patched)
+                except Exception:
+                    pass
             artifacts = render_config(model_obj)
             human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
             return _trace_update(
@@ -1587,6 +1655,11 @@ def build_fortigate_graph(
         # Renderer path: all design fixes go through patch-model -> re-render (the "regenerate"
         # node is renderer-aware). Never use the CLI-editing repair/revise nodes.
         if state.get("renderer_active"):
+            # Once the operator has reviewed/confirmed site values, the deterministic renderer
+            # already guarantees valid CLI; treat judge findings as advisory for the human gate
+            # instead of regenerating (which re-introduces placeholders and adds latency).
+            if state.get("input_values"):
+                return "human_review" if human_review_interrupt else "finalize"
             if verdict == "needs_revision" and int(state.get("judge_iterations", 0) or 0) < 2:
                 return "regenerate"
             return "human_review" if human_review_interrupt else "finalize"
@@ -1666,6 +1739,8 @@ def build_fortigate_graph(
     graph.add_node("assemble_sectional_config_artifacts", assemble_sectional_config_artifacts)
     graph.add_node("build_config_model", build_config_model_node)
     graph.add_node("render_config_artifacts", render_config_artifacts)
+    graph.add_node("recommend_input_values", recommend_input_values)
+    graph.add_node("input_value_review", input_value_review)
     graph.add_node("validate_config", validate_config)
     graph.add_node("check_standards", check_standards)
     graph.add_node("risk_review", risk_review)
@@ -1696,7 +1771,9 @@ def build_fortigate_graph(
     graph.add_edge("repair_implementation_intent", "check_intent_contract")
     graph.add_conditional_edges("analyze_change_impact", route_after_change_impact, {"monolith": "generate_config_artifacts", "sectional": "build_interfaces_dhcp_section", "renderer": "build_config_model"})
     graph.add_conditional_edges("build_config_model", route_after_build_model, {"render": "render_config_artifacts", "sectional": "build_interfaces_dhcp_section", "monolith": "generate_config_artifacts"})
-    graph.add_edge("render_config_artifacts", "validate_config")
+    graph.add_edge("render_config_artifacts", "recommend_input_values")
+    graph.add_edge("recommend_input_values", "input_value_review")
+    graph.add_edge("input_value_review", "validate_config")
     graph.add_edge("build_interfaces_dhcp_section", "build_fortiswitch_section")
     graph.add_edge("build_fortiswitch_section", "build_wifi_section")
     graph.add_edge("build_wifi_section", "build_sdwan_routing_section")
