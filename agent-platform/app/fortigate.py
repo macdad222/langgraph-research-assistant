@@ -1186,6 +1186,39 @@ def build_fortigate_graph(
         recs = await recommend_placeholder_values(_render_invoke, _render_context(state), placeholders)
         return _trace_update(state, {"input_recommendations": recs}, "recommend_input_values", started_at, started_perf, f"Recommended values for {len(recs)} site value(s).")
 
+    async def _ensure_recommended_values(
+        state: FortiGateState, recs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Guarantee every site-value item carries an LLM recommendation.
+
+        On the renderer happy path recommend_input_values has already populated
+        input_recommendations, so this is a no-op. On the fallback/legacy paths
+        (or whenever the items arrive blank) we recommend values here so the user
+        always gets a prefilled default to confirm or change."""
+        if not recs:
+            return recs
+        if any(str(rec.get("recommended_value") or "").strip() for rec in recs):
+            return recs
+        prompts = {
+            str(rec.get("token")): str(rec.get("prompt") or rec.get("token") or "")
+            for rec in recs
+            if rec.get("token")
+        }
+        if not prompts:
+            return recs
+        try:
+            filled = await recommend_placeholder_values(_render_invoke, _render_context(state), prompts)
+        except Exception:
+            return recs
+        by_token = {item.get("token"): item for item in filled}
+        for rec in recs:
+            match = by_token.get(rec.get("token"))
+            if not match:
+                continue
+            rec["recommended_value"] = match.get("recommended_value", "") or ""
+            rec["confidence"] = match.get("confidence", rec.get("confidence", "low"))
+        return recs
+
     def _mandatory_site_value_items(state: FortiGateState) -> list[dict[str, Any]]:
         recs = [dict(item) for item in (state.get("input_recommendations") or []) if isinstance(item, dict)]
         if recs:
@@ -1223,6 +1256,7 @@ def build_fortigate_graph(
     async def input_value_review(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
         recs = _mandatory_site_value_items(state)
+        recs = await _ensure_recommended_values(state, recs)
         values: dict[str, Any] = {
             rec["token"]: rec.get("recommended_value")
             for rec in recs
