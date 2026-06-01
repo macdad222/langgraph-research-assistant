@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # --- placeholder handling -------------------------------------------------------------
 
@@ -119,7 +119,7 @@ class ZoneModel(BaseModel):
 class DhcpServerModel(BaseModel):
     interface: str = Field(..., min_length=1)
     gateway: Value
-    netmask: str = "255.255.255.0"
+    netmask: Value = "255.255.255.0"
     dns: list[Value] = Field(default_factory=list)
     range_start: Value
     range_end: Value
@@ -255,14 +255,38 @@ class SyslogServerModel(BaseModel):
     mode: Literal["udp", "legacy-reliable", "reliable", ""] = ""
 
 
+_FAZ_UPLOAD_OPTIONS = {"realtime", "1-minute", "5-minute"}
+
+
 class FortiAnalyzerModel(BaseModel):
-    server: Value
-    upload_option: Literal["realtime", "1-minute", "5-minute", ""] = ""
+    # Optional so an LLM that emits an empty/placeholder FAZ block doesn't hard-fail;
+    # LoggingModel drops the whole block when no real server is present.
+    server: Optional[Value] = None
+    upload_option: str = ""
+
+    @field_validator("upload_option", mode="before")
+    @classmethod
+    def _normalize_upload_option(cls, v: Any) -> str:
+        # FortiOS only accepts realtime/1-minute/5-minute here; anything else
+        # (e.g. an LLM emitting "disable" to mean "off") is normalized away so we
+        # never render an invalid `set upload-option` line.
+        if isinstance(v, str) and v in _FAZ_UPLOAD_OPTIONS:
+            return v
+        return ""
 
 
 class LoggingModel(BaseModel):
     syslog_servers: list[SyslogServerModel] = Field(default_factory=list)
     fortianalyzer: Optional[FortiAnalyzerModel] = None
+
+    @model_validator(mode="after")
+    def _drop_empty_fortianalyzer(self) -> "LoggingModel":
+        # An empty/placeholder-less FAZ block (no real server) would render
+        # `set server <missing>`; treat it as "not configured" instead.
+        faz = self.fortianalyzer
+        if faz is not None and (faz.server is None or render_value(faz.server).strip() == ""):
+            self.fortianalyzer = None
+        return self
 
 
 # --- VPN models (M2) ------------------------------------------------------------------
@@ -284,8 +308,8 @@ class IPsecPhase2Model(BaseModel):
     name: str = Field(..., min_length=1)
     phase1name: str = Field(..., min_length=1)  # must reference a defined phase1
     proposal: str = "aes256-sha256"
-    src_subnet: str = "0.0.0.0 0.0.0.0"
-    dst_subnet: str = "0.0.0.0 0.0.0.0"
+    src_subnet: Value = "0.0.0.0 0.0.0.0"
+    dst_subnet: Value = "0.0.0.0 0.0.0.0"
     pfs: Literal["enable", "disable", ""] = ""
 
 
@@ -316,7 +340,7 @@ class VpnModel(BaseModel):
 
 class FortiGateConfigModel(BaseModel):
     fortios_version: str = "7.4"
-    hostname: str = ""
+    hostname: Value = ""
     interfaces: list[InterfaceModel] = Field(default_factory=list)
     zones: list[ZoneModel] = Field(default_factory=list)
     dhcp_servers: list[DhcpServerModel] = Field(default_factory=list)
@@ -354,6 +378,14 @@ class FortiGateConfigModel(BaseModel):
         sdwan_zone_names = {z.name for z in self.sdwan.zones} if self.sdwan else set()
         health_check_names = {h.name for h in self.sdwan.health_checks} if self.sdwan else set()
         member_seqs = {m.seq_num for m in self.sdwan.members} if self.sdwan else set()
+
+        # Tolerate a common LLM field confusion: an SD-WAN-routed route belongs in
+        # `sdwan_zone` (renders `set sdwan-zone`), not `device`. If `device` names a
+        # defined sd-wan zone and sdwan_zone is empty, move it before validating.
+        for route in self.static_routes:
+            if route.device and not route.sdwan_zone and route.device in sdwan_zone_names:
+                route.sdwan_zone = route.device
+                route.device = ""
 
         # interfaces: vlan needs a parent; parent must resolve.
         for iface in self.interfaces:

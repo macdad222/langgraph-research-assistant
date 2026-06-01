@@ -4,7 +4,7 @@ config system dhcp server
         set status enable
         set interface "{{ d.interface }}"
         set default-gateway {{ d.gateway | val }}
-        set netmask {{ d.netmask }}
+        set netmask {{ d.netmask | val }}
         set lease-time {{ d.lease_time }}
 {% if d.dns %}
         set dns-service specify

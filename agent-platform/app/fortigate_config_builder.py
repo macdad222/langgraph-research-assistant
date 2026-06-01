@@ -59,6 +59,8 @@ deterministic renderer turns into FortiOS CLI. Return ONLY JSON with a single to
   services:[{id(int), name, dst:[address names], src:[address names], mode(sla|manual|priority|load-balance),
   health_check, sla:[{health_check, id(int)}], priority_members:[seq_num ints]}]}
 - static_routes: [{seq_num(int), dst("ip mask"), gateway, device(interface), sdwan_zone, distance(int), comment}]
+  (For a route steered over SD-WAN, set sdwan_zone to the sd-wan zone name and LEAVE device empty.
+   Use device ONLY for a plain physical/VLAN interface egress. Do NOT put an sd-wan zone in device.)
 - vpn: {ipsec_phase1:[{name, interface, remote_gw, ike_version("1"|"2"), proposal, psksecret,
   peertype(any|one|dialup), comments}], ipsec_phase2:[{name, phase1name, proposal, src_subnet, dst_subnet, pfs}],
   ssl_portals:[{name, tunnel_mode(bool), split_tunneling(bool), ip_pools:[address names]}],

@@ -27,8 +27,8 @@ config vpn ipsec phase2-interface
 {% if p.pfs %}
         set pfs {{ p.pfs }}
 {% endif %}
-        set src-subnet {{ p.src_subnet }}
-        set dst-subnet {{ p.dst_subnet }}
+        set src-subnet {{ p.src_subnet | val }}
+        set dst-subnet {{ p.dst_subnet | val }}
     next
 {% endfor %}
 end

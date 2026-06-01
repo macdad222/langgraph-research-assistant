@@ -79,6 +79,27 @@ async def _run(run: dict) -> None:
         print(f"FAILED to build config model after retries. Errors:\n- " + "\n- ".join(errors))
         return
 
+    summary = {
+        "interfaces": len(model.interfaces),
+        "zones": len(model.zones),
+        "dhcp_servers": len(model.dhcp_servers),
+        "address_objects": len(model.address_objects),
+        "address_groups": len(model.address_groups),
+        "service_objects": len(model.service_objects),
+        "vips": len(model.vips),
+        "sdwan": bool(model.sdwan),
+        "static_routes": len(model.static_routes),
+        "vpn": bool(model.vpn),
+        "firewall_policies": len(model.firewall_policies),
+        "logging": bool(model.logging),
+    }
+    print(f"built model sections: {summary}")
+    try:
+        Path("/tmp/renderer_eval_model.json").write_text(model.model_dump_json(indent=2))
+        print("model JSON dumped to /tmp/renderer_eval_model.json")
+    except Exception:
+        pass
+
     artifacts = render_config(model)
     rendered = artifacts["cli_config"]
     legacy = (run.get("config_artifacts", {}) or {}).get("cli_config", "")
