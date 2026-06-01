@@ -1481,7 +1481,26 @@
           }
         );
         renderRun(run);
-        statusEl.textContent = `Network design package generated: ${run.run_id} from job ${job.job_id}`;
+        statusEl.textContent = `Network design package generated: ${run.run_id}`;
+        if (currentHandoff) {
+          // Chain straight into the FortiGate build so the Confirm Site Values step appears
+          // immediately after the handoff exists (the placeholder question set is derived from
+          // the FortiGate model, which needs the handoff as input).
+          configReadyEl.textContent = "generating";
+          generateConfigButton.disabled = true;
+          exportStatusEl.textContent = "Design ready. Building FortiGate config - you will be asked to confirm site values.";
+          const fgRun = await runInteractiveFortiGate(
+            currentHandoff,
+            (phase) => {
+              exportStatusEl.textContent = `FortiGate: ${phase}`;
+              statusEl.textContent = "FortiGate interactive design in progress (confirm site values when prompted).";
+            }
+          );
+          renderFortiGateRun(fgRun);
+          exportStatusEl.textContent = `FortiGate config generated: ${fgRun.run_id}`;
+          statusEl.textContent = `Design package + FortiGate config complete: ${fgRun.run_id}`;
+          generateConfigButton.disabled = !currentHandoff;
+        }
       } catch (error) {
         statusEl.textContent = `Browser error: ${error.message}`;
         rawEl.textContent = String(error.stack || error);
