@@ -75,13 +75,36 @@ class FortiGateInputReviewItem(BaseModel):
     confidence: str = "medium"
 
 
+class FortiGateReviewSummary(BaseModel):
+    status: str = ""
+    judge_verdict: str = ""
+    renderer_active: bool = True
+    requires_human_input: list[str] = Field(default_factory=list)
+    blocking_issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    human_reviewer_focus: list[str] = Field(default_factory=list)
+    instructions: str = ""
+
+
 class FortiGateInteractiveResponse(BaseModel):
     status: str
     thread_id: str
     checkpoint_thread_id: str
     questions: list[FortiGateQuestion] = Field(default_factory=list)
     input_review: list[FortiGateInputReviewItem] = Field(default_factory=list)
+    review: Optional[FortiGateReviewSummary] = None
     run: Optional["FortiGateRunResponse"] = None
+
+
+class FortiGateInteractiveJobResponse(BaseModel):
+    job_id: str
+    thread_id: str
+    checkpoint_thread_id: str
+    status: str = Field(default="queued", pattern="^(queued|running|awaiting_clarification|awaiting_input_review|awaiting_review|completed|failed|cancelled)$")
+    created_at: str
+    updated_at: str
+    response: Optional[FortiGateInteractiveResponse] = None
+    error: str = ""
 
 
 class FortiGateReviewRequest(BaseModel):

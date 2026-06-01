@@ -24,10 +24,12 @@ from app.fortigate_models import (
     FortiGateDesignJobResponse,
     FortiGateDesignRequest,
     FortiGateHumanReview,
+    FortiGateInteractiveJobResponse,
     FortiGateInteractiveResponse,
     FortiGateJudgeReport,
     FortiGateReviewQuestion,
     FortiGateReviewRequest,
+    FortiGateReviewSummary,
     FortiGateRunResponse,
     FortiGateRunSummary,
     FortiGateStandardsIngestRequest,
@@ -446,6 +448,10 @@ def _fortigate_job_path(job_id: str) -> Path:
     return FORTIGATE_RUNS_DIR / "jobs" / f"{_safe_run_id(job_id)}.json"
 
 
+def _fortigate_interactive_job_path(job_id: str) -> Path:
+    return FORTIGATE_RUNS_DIR / "interactive-jobs" / f"{_safe_run_id(job_id)}.json"
+
+
 def _network_design_run_path(run_id: str) -> Path:
     return NETWORK_DESIGN_RUNS_DIR / f"{_safe_run_id(run_id)}.json"
 
@@ -803,6 +809,37 @@ def update_fortigate_design_job(
     if error:
         job.error = error
     save_fortigate_design_job(job)
+    return job
+
+
+def save_fortigate_interactive_job(job: FortiGateInteractiveJobResponse) -> None:
+    path = _fortigate_interactive_job_path(job.job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(job.model_dump_json(indent=2))
+
+
+def load_fortigate_interactive_job(job_id: str) -> FortiGateInteractiveJobResponse:
+    path = _fortigate_interactive_job_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="FortiGate interactive job not found")
+    return FortiGateInteractiveJobResponse.model_validate_json(path.read_text())
+
+
+def update_fortigate_interactive_job(
+    job_id: str,
+    *,
+    status: str,
+    response: FortiGateInteractiveResponse | None = None,
+    error: str = "",
+) -> FortiGateInteractiveJobResponse:
+    job = load_fortigate_interactive_job(job_id)
+    job.status = status
+    job.updated_at = _utc_now()
+    if response is not None:
+        job.response = response
+    if error:
+        job.error = error
+    save_fortigate_interactive_job(job)
     return job
 
 
@@ -1432,6 +1469,7 @@ async def lifespan(app: FastAPI):
         app.state.fortigate_design_timeout_seconds = get_float_env("FORTIGATE_DESIGN_TIMEOUT_SECONDS", 1800.0)
         app.state.fortigate_design_job_semaphore = asyncio.Semaphore(max(1, get_int_env("FORTIGATE_DESIGN_CONCURRENCY", 1)))
         app.state.fortigate_design_job_tasks = {}
+        app.state.fortigate_interactive_job_tasks = {}
         app.state.network_design_timeout_seconds = get_float_env("NETWORK_DESIGN_TIMEOUT_SECONDS", 1200.0)
         app.state.network_design_job_semaphore = asyncio.Semaphore(max(1, get_int_env("NETWORK_DESIGN_CONCURRENCY", 1)))
         app.state.network_design_job_tasks = {}
@@ -2852,6 +2890,135 @@ async def fortigate_design(request: FortiGateDesignRequest, client_request: Requ
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+def _fortigate_review_summary(review: dict[str, Any]) -> FortiGateReviewSummary:
+    jr = review.get("judge_report", {}) or {}
+    return FortiGateReviewSummary(
+        status=str(review.get("status", "")),
+        judge_verdict=str(jr.get("verdict", "")),
+        renderer_active=bool(review.get("renderer_active", True)),
+        requires_human_input=[str(x) for x in (review.get("requires_human_input") or [])],
+        blocking_issues=[str(x) for x in (jr.get("blocking_issues") or [])],
+        warnings=[str(x) for x in (jr.get("warnings") or [])],
+        human_reviewer_focus=[str(x) for x in (jr.get("human_reviewer_focus") or [])],
+        instructions=str(review.get("instructions", "")),
+    )
+
+
+def _fortigate_interactive_response_from_result(result: dict[str, Any], thread_id: str, checkpoint_thread_id: str) -> FortiGateInteractiveResponse:
+    review = _interrupt_payload(result)
+    if review and review.get("stage") == "fortigate_clarification":
+        return FortiGateInteractiveResponse(
+            status="awaiting_clarification",
+            thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            questions=review.get("questions", []),
+            run=None,
+        )
+    if review and review.get("stage") == "fortigate_input_review":
+        return FortiGateInteractiveResponse(
+            status="awaiting_input_review",
+            thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            questions=[],
+            input_review=review.get("items", []),
+            run=None,
+        )
+    if review:
+        return FortiGateInteractiveResponse(
+            status="awaiting_review",
+            thread_id=thread_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            questions=[],
+            review=_fortigate_review_summary(review),
+            run=None,
+        )
+    response = fortigate_response_from_state(result, thread_id, app.state.model_name)
+    save_fortigate_run(response)
+    return FortiGateInteractiveResponse(status="completed", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=response)
+
+
+async def _run_fortigate_interactive_job(job_id: str, request: FortiGateDesignRequest, thread_id: str) -> None:
+    checkpoint_thread_id = f"fortigate:{thread_id}"
+    try:
+        update_fortigate_interactive_job(job_id, status="running")
+        interactive_initial_state: dict[str, Any] = {"intake": request.intake.model_dump(), "existing_config": request.existing_config}
+        if request.seed_standards:
+            interactive_initial_state["standards"] = request.seed_standards
+        result = await app.state.interactive_fortigate_graph.ainvoke(
+            interactive_initial_state,
+            config=_fortigate_config(thread_id, request.mode),
+        )
+        if app.state.langfuse is not None:
+            app.state.langfuse.flush()
+        response = _fortigate_interactive_response_from_result(result, thread_id, checkpoint_thread_id)
+        update_fortigate_interactive_job(job_id, status=response.status, response=response)
+    except asyncio.CancelledError:
+        update_fortigate_interactive_job(job_id, status="cancelled", error="Job cancelled before completion.")
+        raise
+    except Exception as exc:
+        update_fortigate_interactive_job(job_id, status="failed", error=str(exc))
+
+
+async def _run_fortigate_interactive_resume_job(job_id: str, thread_id: str, payload: dict[str, Any]) -> None:
+    checkpoint_thread_id = f"fortigate:{thread_id}"
+    try:
+        update_fortigate_interactive_job(job_id, status="running")
+        result = await app.state.interactive_fortigate_graph.ainvoke(Command(resume=payload), config=_fortigate_config(thread_id, "interactive"))
+        if app.state.langfuse is not None:
+            app.state.langfuse.flush()
+        response = _fortigate_interactive_response_from_result(result, thread_id, checkpoint_thread_id)
+        update_fortigate_interactive_job(job_id, status=response.status, response=response)
+    except asyncio.CancelledError:
+        update_fortigate_interactive_job(job_id, status="cancelled", error="Job cancelled before completion.")
+        raise
+    except Exception as exc:
+        update_fortigate_interactive_job(job_id, status="failed", error=str(exc))
+
+
+@app.post("/fortigate/interactive/jobs", response_model=FortiGateInteractiveJobResponse, status_code=202)
+async def fortigate_interactive_job_create(request: FortiGateDesignRequest):
+    thread_id = request.thread_id or str(uuid4())
+    checkpoint_thread_id = f"fortigate:{thread_id}"
+    now = _utc_now()
+    job = FortiGateInteractiveJobResponse(
+        job_id=str(uuid4()),
+        thread_id=thread_id,
+        checkpoint_thread_id=checkpoint_thread_id,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+    )
+    save_fortigate_interactive_job(job)
+    task = asyncio.create_task(_run_fortigate_interactive_job(job.job_id, request, thread_id))
+    getattr(app.state, "fortigate_interactive_job_tasks", {})[job.job_id] = task
+    task.add_done_callback(lambda _: getattr(app.state, "fortigate_interactive_job_tasks", {}).pop(job.job_id, None))
+    return job
+
+
+@app.post("/fortigate/interactive/{thread_id}/resume/jobs", response_model=FortiGateInteractiveJobResponse, status_code=202)
+async def fortigate_interactive_resume_job_create(thread_id: str, payload: dict[str, Any]):
+    checkpoint_thread_id = f"fortigate:{thread_id}"
+    now = _utc_now()
+    job = FortiGateInteractiveJobResponse(
+        job_id=str(uuid4()),
+        thread_id=thread_id,
+        checkpoint_thread_id=checkpoint_thread_id,
+        status="queued",
+        created_at=now,
+        updated_at=now,
+    )
+    save_fortigate_interactive_job(job)
+    task = asyncio.create_task(_run_fortigate_interactive_resume_job(job.job_id, thread_id, payload))
+    getattr(app.state, "fortigate_interactive_job_tasks", {})[job.job_id] = task
+    task.add_done_callback(lambda _: getattr(app.state, "fortigate_interactive_job_tasks", {}).pop(job.job_id, None))
+    return job
+
+
+@app.get("/fortigate/interactive/jobs/{job_id}", response_model=FortiGateInteractiveJobResponse)
+async def fortigate_interactive_job(job_id: str):
+    return load_fortigate_interactive_job(job_id)
+
+
 @app.post("/fortigate/interactive", response_model=FortiGateInteractiveResponse)
 async def fortigate_interactive(request: FortiGateDesignRequest):
     thread_id = request.thread_id or str(uuid4())
@@ -2892,6 +3059,7 @@ async def fortigate_interactive(request: FortiGateDesignRequest):
             thread_id=thread_id,
             checkpoint_thread_id=checkpoint_thread_id,
             questions=[],
+            review=_fortigate_review_summary(review),
             run=None,
         )
     response = fortigate_response_from_state(result, thread_id, app.state.model_name)
@@ -2914,7 +3082,7 @@ async def fortigate_interactive_resume(thread_id: str, payload: dict[str, Any]):
     if review and review.get("stage") == "fortigate_input_review":
         return FortiGateInteractiveResponse(status="awaiting_input_review", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], input_review=review.get("items", []), run=None)
     if review:
-        return FortiGateInteractiveResponse(status="awaiting_review", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=None)
+        return FortiGateInteractiveResponse(status="awaiting_review", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], review=_fortigate_review_summary(review), run=None)
     response = fortigate_response_from_state(result, thread_id, app.state.model_name)
     save_fortigate_run(response)
     return FortiGateInteractiveResponse(status="completed", thread_id=thread_id, checkpoint_thread_id=checkpoint_thread_id, questions=[], run=response)

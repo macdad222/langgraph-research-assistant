@@ -29,8 +29,58 @@
     .app {
       min-height: 100vh;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 380px;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: var(--bg);
     }
+    .phase-rail {
+      grid-column: 1 / -1;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(11, 16, 32, .96);
+      backdrop-filter: blur(14px);
+    }
+    .phase-steps {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .phase-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, .18);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(15, 23, 42, .76);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .phase-step::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      border: 2px solid rgba(148, 163, 184, .45);
+      flex: 0 0 auto;
+    }
+    .phase-step.done { color: var(--ok); border-color: rgba(134, 239, 172, .28); }
+    .phase-step.done::before { background: #22c55e; border-color: #22c55e; }
+    .phase-step.active { color: #fde68a; border-color: rgba(251, 191, 36, .7); background: rgba(67, 20, 7, .42); font-weight: 800; }
+    .phase-step.active::before { background: #f59e0b; border-color: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, .18); }
+    .phase-step.blocked { color: var(--danger); border-color: rgba(248, 113, 113, .38); }
+    .phase-summary { color: #dbeafe; font-size: 13px; line-height: 1.35; text-align: right; max-width: 360px; }
     .chat-shell {
       min-height: 100vh;
       display: grid;
@@ -49,8 +99,46 @@
     .subtitle { color: var(--muted); font-size: 14px; }
     .chat-main {
       overflow: auto;
-      padding: 28px 20px 20px;
+      padding: 22px 20px 20px;
     }
+    .stage-panel {
+      width: min(980px, 100%);
+      margin: 0 auto 18px;
+      border: 1px solid rgba(56, 189, 248, .35);
+      border-radius: 22px;
+      background: linear-gradient(180deg, rgba(15, 23, 42, .9), rgba(2, 6, 23, .62));
+      box-shadow: 0 18px 50px rgba(0,0,0,.28);
+      padding: 18px;
+    }
+    .stage-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .stage-kicker { color: #93c5fd; font-size: 12px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 6px; }
+    .stage-title { margin: 0; font-size: clamp(22px, 3vw, 32px); letter-spacing: -.035em; }
+    .stage-copy { color: var(--muted); margin: 8px 0 0; line-height: 1.45; }
+    .stage-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .stage-body { margin-top: 16px; color: #cbd5e1; }
+    .stage-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; align-items: center; }
+    .stage-actions .phase-primary { min-width: 220px; padding: 12px 16px; font-size: 14px; }
+    .stage-review-host { margin-top: 16px; }
+    .assistant-chat {
+      width: min(980px, 100%);
+      margin: 0 auto 18px;
+      border: 1px solid rgba(148, 163, 184, .18);
+      border-radius: 18px;
+      background: rgba(15, 23, 42, .52);
+      overflow: hidden;
+    }
+    .assistant-chat > summary {
+      cursor: pointer;
+      padding: 12px 14px;
+      color: #dbeafe;
+      font-weight: 800;
+    }
+    .assistant-chat-body { padding: 0 14px 14px; }
+    .stage-note { border: 1px solid rgba(148, 163, 184, .2); border-radius: 14px; padding: 12px; background: rgba(2,6,23,.36); }
+    .stage-note strong { color: #e0f2fe; }
+    .progress-bar { height: 8px; border-radius: 999px; overflow: hidden; background: rgba(148,163,184,.18); margin-top: 10px; }
+    .progress-bar span { display: block; height: 100%; width: 42%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #f59e0b); animation: progressSweep 1.2s ease-in-out infinite alternate; }
+    @keyframes progressSweep { from { transform: translateX(-60%); } to { transform: translateX(160%); } }
     .chat-log {
       width: min(920px, 100%);
       margin: 0 auto;
@@ -359,6 +447,25 @@
       border-radius: 10px; border: 1px solid rgba(251, 191, 36, .6); background: #b45309; color: #fff7ed;
     }
     .primary-action:hover { background: #c2620a; }
+    .review-secondary { width: 100%; margin-top: 8px; padding: 9px; cursor: pointer; }
+    .review-card textarea {
+      width: 100%; box-sizing: border-box; border-radius: 8px; border: 1px solid rgba(148,163,184,.35);
+      background: #020617; color: #e2e8f0; padding: 8px; font-size: 13px;
+    }
+    .review-section { margin-bottom: 10px; }
+    .review-section-title { font-weight: 700; font-size: 12px; color: #cbd5e1; margin-bottom: 4px; }
+    .review-section-title.bad { color: var(--danger); }
+    .review-section-title.warn { color: var(--warn); }
+    .review-list { margin: 0; padding-left: 18px; font-size: 13px; color: #e2e8f0; display: flex; flex-direction: column; gap: 3px; }
+    .fg-phase { border-color: rgba(96,165,250,.4); background: rgba(2,6,23,.5); }
+    .fg-phase-title { font-size: 12px; color: #93c5fd; font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .04em; }
+    .fg-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .fg-step { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .fg-step .fg-dot { width: 10px; height: 10px; border-radius: 999px; border: 2px solid rgba(148,163,184,.5); background: transparent; flex: 0 0 auto; }
+    .fg-step.done { color: #86efac; }
+    .fg-step.done .fg-dot { background: #22c55e; border-color: #22c55e; }
+    .fg-step.active { color: #fde68a; font-weight: 700; }
+    .fg-step.active .fg-dot { background: #f59e0b; border-color: #f59e0b; box-shadow: 0 0 0 4px rgba(245,158,11,.2); }
     pre {
       overflow: auto;
       max-height: 360px;
@@ -372,14 +479,23 @@
     }
     .hidden { display: none; }
     @media (max-width: 1080px) {
-      .app { grid-template-columns: 1fr; }
+      .app { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+      .phase-rail { grid-template-columns: 1fr; }
+      .phase-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .phase-summary { text-align: left; max-width: none; }
       aside { height: auto; border-left: 0; border-top: 1px solid var(--line); }
       .starter-grid { grid-template-columns: 1fr; }
+      .stage-top { flex-direction: column; }
+      .stage-meta { justify-content: flex-start; }
     }
   </style>
 </head>
 <body>
   <div class="app">
+    <section id="phase-rail" class="phase-rail" aria-live="polite">
+      <div id="phase-steps" class="phase-steps"></div>
+      <div id="phase-summary" class="phase-summary">Start with intake. The next action will appear in the stage panel.</div>
+    </section>
     <section class="chat-shell">
       <header>
         <h1>Network Design Helper</h1>
@@ -387,6 +503,26 @@
       </header>
 
       <main id="chat-main" class="chat-main">
+        <section id="stage-panel" class="stage-panel">
+          <div class="stage-top">
+            <div>
+              <div id="stage-kicker" class="stage-kicker">Current phase</div>
+              <h2 id="stage-title" class="stage-title">Intake and readiness</h2>
+              <p id="stage-copy" class="stage-copy">Chat through the requirements and answer the guided intake prompts. The primary action updates as the design progresses.</p>
+            </div>
+            <div id="stage-meta" class="stage-meta"></div>
+          </div>
+          <div id="stage-body" class="stage-body"></div>
+          <div id="stage-review-host" class="stage-review-host"></div>
+          <div class="stage-actions">
+            <button id="phase-primary" class="phase-primary">Answer required intake</button>
+            <button id="phase-secondary" class="secondary hidden">Secondary action</button>
+            <span id="phase-action-note" class="hint"></span>
+          </div>
+        </section>
+        <details id="assistant-chat" class="assistant-chat" open>
+          <summary>Assistant chat and guided intake</summary>
+          <div class="assistant-chat-body">
         <div id="empty-state" class="empty-state">
           <h2>What are we designing?</h2>
           <p>Start with the site goal, WAN/LAN assumptions, security needs, or just ask what information is needed.</p>
@@ -399,6 +535,8 @@
         </div>
         <div id="chat-log" class="chat-log"></div>
         <div id="guided-intake-panel" class="guided-panel"></div>
+          </div>
+        </details>
       </main>
 
       <div class="composer-wrap">
@@ -549,6 +687,28 @@
     let currentReadinessReport = {};
     let initialGuidedBatchSubmitted = false;
     let packageStartInProgress = false;
+    let buildTimer = null;
+    let buildStartedAt = 0;
+    let recoveringFgJob = false;
+    const ACTIVE_FG_JOB_KEY = "networkDesign.activeFortiGateInteractiveJob";
+
+    const PHASES = [
+      { key: "intake", label: "Intake" },
+      { key: "ready", label: "Ready" },
+      { key: "package", label: "Design package" },
+      { key: "handoff", label: "Design ready" },
+      { key: "fortigate", label: "FortiGate build" },
+      { key: "confirm", label: "Confirm values" },
+      { key: "review", label: "Final review" },
+      { key: "done", label: "Done" },
+    ];
+    const PHASE_ORDER = PHASES.map((p) => p.key);
+    const ui = {
+      phase: "intake",
+      substatus: "Chat through the requirements and answer guided intake prompts.",
+      busy: false,
+      error: "",
+    };
 
     const statusEl = document.getElementById("status");
     const exportStatusEl = document.getElementById("export-status");
@@ -567,6 +727,17 @@
     const designReadyEl = document.getElementById("design-ready");
     const configReadyEl = document.getElementById("config-ready");
     const downloadsReadyEl = document.getElementById("downloads-ready");
+    const phaseStepsEl = document.getElementById("phase-steps");
+    const phaseSummaryEl = document.getElementById("phase-summary");
+    const stageKickerEl = document.getElementById("stage-kicker");
+    const stageTitleEl = document.getElementById("stage-title");
+    const stageCopyEl = document.getElementById("stage-copy");
+    const stageMetaEl = document.getElementById("stage-meta");
+    const stageBodyEl = document.getElementById("stage-body");
+    const stageReviewHost = document.getElementById("stage-review-host");
+    const phasePrimaryButton = document.getElementById("phase-primary");
+    const phaseSecondaryButton = document.getElementById("phase-secondary");
+    const phaseActionNote = document.getElementById("phase-action-note");
     document.getElementById("graph-link").href = `${apiBase}/network-design/graph/mermaid`;
 
     function escapeHtml(value) {
@@ -603,6 +774,139 @@
       return payload?.error || fallback;
     }
 
+    function setUiPhase(phase, substatus = "", options = {}) {
+      ui.phase = phase;
+      ui.substatus = substatus || ui.substatus || "";
+      ui.busy = Boolean(options.busy);
+      ui.error = options.error || "";
+      if (options.timer === "start") startBuildTimer();
+      if (options.timer === "stop") stopBuildTimer();
+      renderPhase();
+    }
+
+    function currentPhaseIndex() {
+      return Math.max(0, PHASE_ORDER.indexOf(ui.phase));
+    }
+
+    function formatElapsed(ms) {
+      const sec = Math.max(0, Math.floor(ms / 1000));
+      const min = Math.floor(sec / 60);
+      const rem = String(sec % 60).padStart(2, "0");
+      return `${min}:${rem}`;
+    }
+
+    function phaseText() {
+      const ready = Boolean(currentReadinessReport?.ready_for_package);
+      const percent = readinessPercent();
+      const elapsed = buildStartedAt ? ` Elapsed: ${formatElapsed(Date.now() - buildStartedAt)}.` : "";
+      const base = {
+        intake: ["Intake and readiness", ready ? "Required intake is complete." : `Readiness is ${percent}%. Continue chat or guided intake until ready.`],
+        ready: ["Ready to build", "Build the design package when you are ready."],
+        package: ["Building design package", `${ui.substatus || "The design package job is running."}${elapsed}`],
+        handoff: ["Design package ready", ui.substatus || "Review the FortiGate handoff, then start the FortiGate build when ready."],
+        fortigate: ["Building FortiGate config", `${ui.substatus || "The FortiGate agent is building the draft config."}${elapsed}`],
+        confirm: ["Confirm site values", ui.substatus || "Review recommended site-specific values before the config finalizes."],
+        review: ["Final review", ui.substatus || "Review judge findings and unknowns before approving the draft artifact."],
+        done: ["Done", ui.substatus || "Artifacts are ready to review and download."],
+      }[ui.phase] || ["Network design", ui.substatus || "Ready."];
+      if (ui.error) return ["Needs attention", ui.error];
+      return base;
+    }
+
+    function startBuildTimer() {
+      if (!buildStartedAt) buildStartedAt = Date.now();
+      if (buildTimer) clearInterval(buildTimer);
+      buildTimer = setInterval(renderPhase, 1000);
+    }
+
+    function stopBuildTimer() {
+      if (buildTimer) clearInterval(buildTimer);
+      buildTimer = null;
+      buildStartedAt = 0;
+    }
+
+    function stageMetaPills() {
+      const items = [];
+      items.push(`<span class="pill ${currentReadinessReport?.ready_for_package ? "ok" : "warn"}">Readiness: ${readinessPercent()}%</span>`);
+      items.push(`<span class="pill ${currentHandoff ? "ok" : ""}">Handoff: ${currentHandoff ? "ready" : "not ready"}</span>`);
+      items.push(`<span class="pill ${currentFortiGateRun ? "ok" : ""}">Config: ${currentFortiGateRun ? "ready" : "not generated"}</span>`);
+      return items.join("");
+    }
+
+    function renderPhase() {
+      const activeIndex = currentPhaseIndex();
+      phaseStepsEl.innerHTML = PHASES.map((p, idx) => {
+        const cls = idx < activeIndex ? "done" : (idx === activeIndex ? "active" : "");
+        return `<div class="phase-step ${cls}" data-phase="${p.key}">${p.label}</div>`;
+      }).join("");
+      const [title, copy] = phaseText();
+      phaseSummaryEl.textContent = copy;
+      stageKickerEl.textContent = `Phase ${activeIndex + 1} of ${PHASES.length}`;
+      stageTitleEl.textContent = title;
+      stageCopyEl.textContent = copy;
+      stageMetaEl.innerHTML = stageMetaPills();
+      renderStageBody();
+      updatePhaseActions();
+    }
+
+    function renderStageBody() {
+      const ready = Boolean(currentReadinessReport?.ready_for_package);
+      if (["package", "fortigate"].includes(ui.phase)) {
+        stageBodyEl.innerHTML = `<div class="stage-note"><strong>${escapeHtml(ui.substatus || "Working...")}</strong><div class="progress-bar"><span></span></div><p class="status">Long-running model calls can take several minutes. Keep this page open; prompts will appear here when user input is needed.</p></div>`;
+        return;
+      }
+      if (ui.phase === "confirm" || ui.phase === "review") {
+        stageBodyEl.innerHTML = `<div class="stage-note"><strong>Action needed.</strong><p class="status">Use the form below. The workflow will not continue until you choose the next action.</p></div>`;
+        return;
+      }
+      if (ui.phase === "handoff") {
+        stageBodyEl.innerHTML = `<div class="stage-note"><strong>Design package is ready.</strong><p class="status">The FortiGate handoff exists, but the FortiGate config has not been built yet. Click Build FortiGate config when you are ready.</p></div>`;
+        return;
+      }
+      if (ui.phase === "done") {
+        stageBodyEl.innerHTML = `<div class="stage-note"><strong>Artifacts are ready.</strong><p class="status">Download the design package, audit, JSON, and FortiGate config from the context panel.</p></div>`;
+        return;
+      }
+      stageBodyEl.innerHTML = `<div class="stage-note"><strong>${ready ? "Ready for design package." : "Intake is still incomplete."}</strong><p class="status">${escapeHtml(ready ? "The design package can be built now." : (currentReadinessReport?.next_question || "Use chat or guided intake to collect required details."))}</p></div>`;
+    }
+
+    function updatePhaseActions() {
+      phaseSecondaryButton.classList.add("hidden");
+      phaseActionNote.textContent = "";
+      phasePrimaryButton.disabled = false;
+      if (ui.phase === "intake") {
+        phasePrimaryButton.textContent = currentReadinessReport?.ready_for_package ? "Build design package" : "Send intake answer";
+        phaseActionNote.textContent = currentReadinessReport?.ready_for_package ? "Required intake is complete." : "Use the chat composer or guided answers below.";
+        return;
+      }
+      if (ui.phase === "ready") {
+        phasePrimaryButton.textContent = "Build design package";
+        return;
+      }
+      if (["package", "fortigate"].includes(ui.phase)) {
+        phasePrimaryButton.textContent = "Working...";
+        phasePrimaryButton.disabled = true;
+        return;
+      }
+      if (ui.phase === "confirm") {
+        phasePrimaryButton.textContent = "Use form below to confirm values";
+        phasePrimaryButton.disabled = true;
+        return;
+      }
+      if (ui.phase === "review") {
+        phasePrimaryButton.textContent = "Use final review below";
+        phasePrimaryButton.disabled = true;
+        return;
+      }
+      if (ui.phase === "handoff") {
+        phasePrimaryButton.textContent = "Build FortiGate config";
+        phasePrimaryButton.disabled = !currentHandoff;
+        return;
+      }
+      phasePrimaryButton.textContent = currentFortiGateRun ? "Download config" : (currentHandoff ? "Build FortiGate config" : "Design package complete");
+      phasePrimaryButton.disabled = !currentFortiGateRun && !currentHandoff;
+    }
+
     function fgConfidenceClass(confidence) {
       if (confidence === "high") return "ok";
       if (confidence === "low") return "bad";
@@ -612,8 +916,8 @@
     function activateReviewCard() {
       fortigateReviewCard.classList.remove("hidden");
       fortigateReviewCard.classList.add("active");
-      const parent = fortigateReviewCard.parentElement;
-      if (parent && parent.firstElementChild !== fortigateReviewCard) parent.prepend(fortigateReviewCard);
+      const host = stageReviewHost || fortigateReviewCard.parentElement;
+      if (host && fortigateReviewCard.parentElement !== host) host.appendChild(fortigateReviewCard);
       fortigateReviewCard.scrollIntoView({ behavior: "smooth", block: "start" });
       const first = fortigateReviewCard.querySelector("input");
       if (first) first.focus();
@@ -670,6 +974,64 @@
       activateReviewCard();
     }
 
+    function setFgPhase(active) {
+      const phaseMap = { building: "fortigate", confirm: "confirm", review: "review", done: "done" };
+      const textMap = {
+        building: "The FortiGate agent is building the draft config.",
+        confirm: "Confirm site-specific values before rendering final artifacts.",
+        review: "Review judge findings and unknowns before finalizing.",
+        done: "FortiGate artifacts are ready.",
+      };
+      setUiPhase(phaseMap[active] || "fortigate", textMap[active] || "FortiGate build in progress.", { busy: active === "building", timer: active === "done" ? "stop" : undefined });
+    }
+
+    function renderFgFinalReview(review) {
+      const rhi = review.requires_human_input || [];
+      const blocking = review.blocking_issues || [];
+      const warnings = review.warnings || [];
+      const focus = review.human_reviewer_focus || [];
+      const fellBack = review.renderer_active === false;
+      const verdict = review.judge_verdict || "";
+      const section = (title, cls, items) => items.length
+        ? `<div class="review-section"><div class="review-section-title ${cls}">${title} (${items.length})</div>
+             <ul class="review-list">${items.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></div>`
+        : "";
+      fortigateReviewCard.innerHTML = `
+        <div class="review-head">
+          <h3>Final review</h3>
+          ${verdict ? `<span class="pill ${/(approve|pass)/i.test(verdict) ? "ok" : "warn"}">${escapeHtml(verdict)}</span>` : ""}
+        </div>
+        <div class="warning-block">${fellBack
+          ? "The deterministic renderer did not run for this design, so site values were not pre-extracted. Review the unknowns below and approve to finalize (the .conf may still contain placeholders to fill in)."
+          : "No changes are applied to any device. Review the findings, then approve to finalize or request revisions."}</div>
+        <div class="review-items">
+          ${section("Site values / unknowns to confirm", "", rhi)}
+          ${section("Blocking issues", "bad", blocking)}
+          ${section("Warnings", "warn", warnings)}
+          ${section("Reviewer focus", "", focus)}
+          <div class="field"><label>Reviewer notes (optional)</label><textarea id="fg-review-notes" rows="2" placeholder="Notes for the record..."></textarea></div>
+        </div>
+        <div class="review-actions">
+          <button data-fg-review-decision="approved" class="primary-action">Approve &amp; finalize</button>
+          <button data-fg-review-decision="needs_work" class="secondary review-secondary">Request revisions</button>
+        </div>
+      `;
+      activateReviewCard();
+    }
+
+    function fgWaitForReview() {
+      return new Promise((resolve) => {
+        const handler = (event) => {
+          const btn = event.target.closest("[data-fg-review-decision]");
+          if (!btn) return;
+          document.removeEventListener("click", handler);
+          const notes = document.getElementById("fg-review-notes")?.value.trim() || "";
+          resolve({ decision: btn.dataset.fgReviewDecision, reviewer_notes: notes });
+        };
+        document.addEventListener("click", handler);
+      });
+    }
+
     function fgWaitForClick(buttonId, collect) {
       return new Promise((resolve) => {
         const handler = (event) => {
@@ -695,50 +1057,131 @@
       }, {});
     }
 
+    function interactiveJobPath(path) {
+      if (path === "/fortigate/interactive") return "/fortigate/interactive/jobs";
+      if (path.includes("/resume")) return `${path}/jobs`;
+      return path;
+    }
+
+    function rememberActiveFgJob(job) {
+      if (job?.job_id) localStorage.setItem(ACTIVE_FG_JOB_KEY, job.job_id);
+    }
+
+    function clearActiveFgJob() {
+      localStorage.removeItem(ACTIVE_FG_JOB_KEY);
+    }
+
+    async function fetchFgInteractiveJob(jobId) {
+      const response = await fetch(`${apiBase}/fortigate/interactive/jobs/${jobId}`);
+      const job = await readJsonResponse(response);
+      rawEl.textContent = JSON.stringify(job, null, 2);
+      if (!response.ok) throw new Error(apiErrorMessage(job, response.statusText));
+      return job;
+    }
+
     async function postFgInteractive(path, body) {
-      const response = await fetch(`${apiBase}${path}`, {
+      const response = await fetch(`${apiBase}${interactiveJobPath(path)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
-      const data = await readJsonResponse(response);
-      if (!response.ok) throw new Error(data.detail || response.statusText);
-      rawEl.textContent = JSON.stringify(data, null, 2);
-      return data;
+      let job = await readJsonResponse(response);
+      if (!response.ok) throw new Error(apiErrorMessage(job, response.statusText));
+      rememberActiveFgJob(job);
+      rawEl.textContent = JSON.stringify(job, null, 2);
+      while (["queued", "running"].includes(job.status)) {
+        const label = job.status === "queued" ? "queued" : "running";
+        setUiPhase(ui.phase === "package" ? "package" : "fortigate", `FortiGate interactive job ${label}: ${job.job_id}`, { busy: true, timer: "start" });
+        await sleep(3000);
+        job = await fetchFgInteractiveJob(job.job_id);
+        rememberActiveFgJob(job);
+      }
+      if (["failed", "cancelled"].includes(job.status)) {
+        clearActiveFgJob();
+        throw new Error(job.error || `FortiGate interactive job ended with status ${job.status}`);
+      }
+      if (!job.response) throw new Error(`FortiGate interactive job finished without a response (${job.status}).`);
+      if (job.response.status === "completed") clearActiveFgJob();
+      return job.response;
     }
 
+    async function continueFortiGateInteractive(resp, onStatus) {
+      const threadId = resp.thread_id;
+      let guard = 0;
+      while (resp.status !== "completed" && guard++ < 25) {
+        onStatus?.(resp.status);
+        if (resp.status === "awaiting_clarification") {
+          setFgPhase("building");
+          renderFgClarification(resp.questions || []);
+          const answers = await fgWaitForClick("confirm-fg-clar", collectFgClarification);
+          onStatus?.("designing...");
+          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { answers });
+        } else if (resp.status === "awaiting_input_review") {
+          setFgPhase("confirm");
+          renderFgInputReview(resp.input_review || []);
+          const values = await fgWaitForClick("confirm-fg-values", collectFgInputReview);
+          onStatus?.("applying values & rendering...");
+          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { values });
+        } else if (resp.status === "awaiting_review") {
+          setFgPhase("review");
+          renderFgFinalReview(resp.review || {});
+          const decision = await fgWaitForReview();
+          onStatus?.(decision.decision === "approved" ? "finalizing config..." : "requesting revisions...");
+          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, decision);
+        } else {
+          throw new Error(`Unexpected interactive status: ${resp.status}`);
+        }
+      }
+      if (resp.status !== "completed" || !resp.run) throw new Error("Interactive FortiGate flow did not complete.");
+      clearActiveFgJob();
+      setFgPhase("done");
+      fortigateReviewCard.classList.remove("active");
+      fortigateReviewCard.classList.add("hidden");
+      return resp.run;
+    }
+
+    async function recoverActiveFortiGateJob() {
+      if (recoveringFgJob) return;
+      const jobId = localStorage.getItem(ACTIVE_FG_JOB_KEY);
+      if (!jobId || !["fortigate", "confirm", "review"].includes(ui.phase)) return;
+      recoveringFgJob = true;
+      try {
+        const job = await fetchFgInteractiveJob(jobId);
+        if (["queued", "running"].includes(job.status)) {
+          setUiPhase("fortigate", `FortiGate interactive job ${job.status}: ${job.job_id}`, { busy: true, timer: "start" });
+          return;
+        }
+        if (["failed", "cancelled"].includes(job.status)) {
+          clearActiveFgJob();
+          setUiPhase("handoff", job.error || `FortiGate job ended with ${job.status}.`, { timer: "stop", error: job.error || job.status });
+          return;
+        }
+        if (job.response) {
+          const run = await continueFortiGateInteractive(job.response, (phase) => {
+            exportStatusEl.textContent = `FortiGate: ${phase}`;
+            statusEl.textContent = "FortiGate interactive design in progress (confirm site values when prompted).";
+          });
+          renderFortiGateRun(run);
+        }
+      } catch (error) {
+        console.warn("Unable to recover FortiGate interactive job", error);
+      } finally {
+        recoveringFgJob = false;
+      }
+    }
+
+    setInterval(recoverActiveFortiGateJob, 5000);
+
     async function runInteractiveFortiGate(intake, onStatus) {
+      clearActiveFgJob();
+      setFgPhase("building");
       let resp = await postFgInteractive("/fortigate/interactive", {
         intake,
         existing_config: "",
         thread_id: `${currentRun?.thread_id || "network-design"}-${Date.now()}-fg`,
         mode: "interactive"
       });
-      const threadId = resp.thread_id;
-      let guard = 0;
-      while (resp.status !== "completed" && guard++ < 25) {
-        onStatus?.(resp.status);
-        if (resp.status === "awaiting_clarification") {
-          renderFgClarification(resp.questions || []);
-          const answers = await fgWaitForClick("confirm-fg-clar", collectFgClarification);
-          onStatus?.("designing...");
-          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { answers });
-        } else if (resp.status === "awaiting_input_review") {
-          renderFgInputReview(resp.input_review || []);
-          const values = await fgWaitForClick("confirm-fg-values", collectFgInputReview);
-          onStatus?.("applying values & rendering...");
-          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { values });
-        } else if (resp.status === "awaiting_review") {
-          onStatus?.("finalizing config...");
-          resp = await postFgInteractive(`/fortigate/interactive/${threadId}/resume`, { decision: "approved", reviewer_notes: "auto-approved after value review" });
-        } else {
-          throw new Error(`Unexpected interactive status: ${resp.status}`);
-        }
-      }
-      if (resp.status !== "completed" || !resp.run) throw new Error("Interactive FortiGate flow did not complete.");
-      fortigateReviewCard.classList.remove("active");
-      fortigateReviewCard.classList.add("hidden");
-      return resp.run;
+      return await continueFortiGateInteractive(resp, onStatus);
     }
 
     async function startFortiGateDesignJob(payload, onUpdate) {
@@ -919,6 +1362,11 @@
         ? labels.map((label) => `<li>${escapeHtml(label)}</li>`).join("")
         : "";
       document.getElementById("run-design").disabled = !ready;
+      if (!["package", "handoff", "fortigate", "confirm", "review", "done"].includes(ui.phase)) {
+        setUiPhase(ready ? "ready" : "intake", ready ? "Required intake is complete. Build the design package when ready." : (currentReadinessReport?.next_question || "Continue intake."));
+      } else {
+        renderPhase();
+      }
       renderGuidedIntakeCards();
     }
 
@@ -1424,6 +1872,7 @@
       downloadAuditButton.disabled = !currentRun;
       downloadConfigButton.disabled = true;
       renderFortiGateReview(null);
+      stageReviewHost.innerHTML = "";
       designReadyEl.textContent = "ready";
       configReadyEl.textContent = "not generated";
       downloadsReadyEl.textContent = "design/audit/json";
@@ -1479,8 +1928,29 @@
         ? `FortiGate draft config needs review. You can download the .conf with a warning header, or answer Qwen's questions below and re-judge.${judgeStatus}`
         : `FortiGate config ready. You can download the .conf and detailed audit file.${judgeStatus}`;
       statusEl.textContent = `FortiGate configuration generated: ${run.run_id}`;
+      setUiPhase("done", `FortiGate configuration generated: ${run.run_id}`, { timer: "stop" });
       renderFortiGateReview(run);
     }
+
+    phasePrimaryButton.addEventListener("click", async () => {
+      if (ui.phase === "intake" && !currentReadinessReport?.ready_for_package) {
+        const pending = document.getElementById("chat-message").value.trim();
+        if (pending) await sendMessage();
+        else document.getElementById("chat-message").focus();
+        return;
+      }
+      if (["intake", "ready"].includes(ui.phase)) {
+        await runNetworkDesignPackage();
+        return;
+      }
+      if (ui.phase === "handoff") {
+        generateConfigButton.click();
+        return;
+      }
+      if (ui.phase === "done") {
+        if (currentFortiGateRun) downloadConfigButton.click();
+      }
+    });
 
     document.getElementById("send-message").addEventListener("click", () => sendMessage());
     document.getElementById("chat-message").addEventListener("keydown", (event) => {
@@ -1513,6 +1983,7 @@
       const button = document.getElementById("run-design");
       packageStartInProgress = true;
       button.disabled = true;
+      setUiPhase("package", "Starting network design package job...", { busy: true, timer: "start" });
       statusEl.textContent = "Starting network design package job...";
       guidedIntakePanel.innerHTML = `
         <div class="guided-card">
@@ -1530,36 +2001,25 @@
             thread_id: document.getElementById("thread-id").value || undefined
           },
           (job) => {
+            setUiPhase("package", `Network design job ${job.status}: ${job.job_id}`, { busy: true, timer: "start" });
             statusEl.textContent = `Network design job ${job.status}: ${job.job_id}`;
             rawEl.textContent = JSON.stringify(job, null, 2);
           }
         );
+        stopBuildTimer();
         renderRun(run);
+        setUiPhase(currentHandoff ? "handoff" : "done", currentHandoff ? "Design package ready. Start the FortiGate build when you are ready." : "Design package ready, but no FortiGate handoff was returned.");
         statusEl.textContent = `Network design package generated: ${run.run_id}`;
         if (currentHandoff) {
-          // Chain straight into the FortiGate build so the Confirm Site Values step appears
-          // immediately after the handoff exists (the placeholder question set is derived from
-          // the FortiGate model, which needs the handoff as input).
-          configReadyEl.textContent = "generating";
-          generateConfigButton.disabled = true;
-          exportStatusEl.textContent = "Design ready. Building FortiGate config - you will be asked to confirm site values.";
+          setUiPhase("handoff", "Design package ready. Review the handoff, then start the FortiGate build when you are ready.");
+          configReadyEl.textContent = "not generated";
+          generateConfigButton.disabled = false;
+          exportStatusEl.textContent = "Design package ready. Start the FortiGate build when you are ready; site-value prompts will appear in the main stage.";
           guidedIntakePanel.innerHTML = `
             <div class="guided-card">
-              <h3>Building FortiGate Config</h3>
-              <p>Designing the FortiGate config from your handoff (about 1-2 minutes). You will be asked to
-                <strong>confirm site values</strong> in the review panel before the config is finalized.</p>
+              <h3>Design Package Ready</h3>
+              <p>The FortiGate handoff is ready. Click <strong>Build FortiGate config</strong> when you are ready to generate the draft and confirm site values.</p>
             </div>`;
-          const fgRun = await runInteractiveFortiGate(
-            currentHandoff,
-            (phase) => {
-              exportStatusEl.textContent = `FortiGate: ${phase}`;
-              statusEl.textContent = "FortiGate interactive design in progress (confirm site values when prompted).";
-            }
-          );
-          renderFortiGateRun(fgRun);
-          exportStatusEl.textContent = `FortiGate config generated: ${fgRun.run_id}`;
-          statusEl.textContent = `Design package + FortiGate config complete: ${fgRun.run_id}`;
-          generateConfigButton.disabled = !currentHandoff;
         }
       } catch (error) {
         statusEl.textContent = `Browser error: ${error.message}`;
@@ -1637,6 +2097,8 @@
       renderMessages();
       statusEl.textContent = "Chat cleared.";
       exportStatusEl.textContent = "Generate a package first, then export files.";
+      stageReviewHost.innerHTML = "";
+      setUiPhase("intake", "Chat through requirements and answer guided intake prompts.", { timer: "stop" });
     });
 
     copyMarkdown.addEventListener("click", async () => {
@@ -1743,6 +2205,7 @@
       downloadText(`${fileBase()}-run.json`, JSON.stringify({ network_design_run: currentRun, fortigate_run: currentFortiGateRun }, null, 2), "application/json");
     });
     updateReadinessUi();
+    renderPhase();
   </script>
 </body>
 </html>

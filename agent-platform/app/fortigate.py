@@ -1186,18 +1186,50 @@ def build_fortigate_graph(
         recs = await recommend_placeholder_values(_render_invoke, _render_context(state), placeholders)
         return _trace_update(state, {"input_recommendations": recs}, "recommend_input_values", started_at, started_perf, f"Recommended values for {len(recs)} site value(s).")
 
+    def _mandatory_site_value_items(state: FortiGateState) -> list[dict[str, Any]]:
+        recs = [dict(item) for item in (state.get("input_recommendations") or []) if isinstance(item, dict)]
+        if recs:
+            return recs
+        seen: set[str] = set()
+        items: list[dict[str, Any]] = []
+
+        def add_item(token: str, prompt: str, recommended_value: str = "", confidence: str = "low") -> None:
+            key = re.sub(r"[^A-Za-z0-9_]+", "_", token).strip("_").upper() or f"SITE_VALUE_{len(items) + 1}"
+            if key in seen:
+                return
+            seen.add(key)
+            items.append({"token": key, "prompt": prompt, "recommended_value": recommended_value, "confidence": confidence})
+
+        for idx, item in enumerate(_as_list(state.get("requires_human_input")), start=1):
+            text = str(item).strip()
+            if not text:
+                continue
+            token_match = re.search(r"<([A-Za-z0-9_:-]+)>|\b([A-Z][A-Z0-9_]{2,})\b", text)
+            token = (token_match.group(1) or token_match.group(2)) if token_match else f"REQUIRED_SITE_VALUE_{idx}"
+            add_item(token, text)
+
+        baseline = [
+            ("WAN_CIRCUIT_VALUES", "Confirm WAN circuit details: interface, IP assignment, gateway, ISP name, and bandwidth for each circuit."),
+            ("LAN_VLAN_VALUES", "Confirm LAN VLAN IDs, names, subnets, gateway IPs, and parent interfaces."),
+            ("DHCP_SCOPE_VALUES", "Confirm DHCP scope start/end, DNS servers, and lease time for each DHCP-enabled VLAN."),
+            ("SSID_VALUES", "Confirm wireless SSID names, mapped VLANs, and authentication details or PSKs."),
+            ("SECURITY_DESTINATIONS", "Confirm real FQDNs/IPs for payment gateways, business applications, DNS/NTP, and any allowlisted destinations."),
+            ("MANAGEMENT_LOGGING_VALUES", "Confirm management subnet, admin access sources, FortiAnalyzer/syslog/SNMP destinations, and timezone/NTP."),
+        ]
+        for token, prompt in baseline:
+            add_item(token, prompt, confidence="medium")
+        return items
+
     async def input_value_review(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
-        recs = state.get("input_recommendations") or []
-        if not state.get("renderer_active") or not recs:
-            return _trace_update(state, {}, "input_value_review", started_at, started_perf, "No site values to review.", branch="skip")
+        recs = _mandatory_site_value_items(state)
         values: dict[str, Any] = {
             rec["token"]: rec.get("recommended_value")
             for rec in recs
             if rec.get("recommended_value") not in (None, "")
         }
-        if human_review_interrupt:
-            answers = interrupt({"stage": "fortigate_input_review", "items": recs, "intake": state.get("intake", {})})
+        if human_review_interrupt and not state.get("site_values_reviewed"):
+            answers = interrupt({"stage": "fortigate_input_review", "items": recs, "intake": state.get("intake", {}), "mandatory": True})
             if isinstance(answers, dict):
                 provided = answers.get("values")
                 if not isinstance(provided, dict):
@@ -1205,12 +1237,30 @@ def build_fortigate_graph(
                 for key, val in (provided or {}).items():
                     if val not in (None, ""):
                         values[key] = val
+        if not state.get("renderer_active"):
+            return _trace_update(
+                state,
+                {"input_values": values, "site_values_reviewed": True},
+                "input_value_review",
+                started_at,
+                started_perf,
+                f"Captured {len(values)} mandatory site value(s) before legacy/fallback validation.",
+                branch="captured",
+            )
         new_model_dict = substitute_placeholder_dicts(state.get("config_model", {}), values)
         try:
             model_obj = FortiGateConfigModel(**new_model_dict)
             artifacts = render_config(model_obj)
         except Exception as exc:
-            return _trace_update(state, {"input_values": values}, "input_value_review", started_at, started_perf, f"Could not apply reviewed values: {exc}", branch="error")
+            return _trace_update(
+                state,
+                {"input_values": values, "site_values_reviewed": True},
+                "input_value_review",
+                started_at,
+                started_perf,
+                f"Captured reviewed values but could not apply them to rendered model: {exc}",
+                branch="captured_apply_error",
+            )
         human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
         return _trace_update(
             state,
@@ -1219,6 +1269,7 @@ def build_fortigate_graph(
                 "config_artifacts": artifacts,
                 "requires_human_input": human_inputs,
                 "input_values": values,
+                "site_values_reviewed": True,
             },
             "input_value_review",
             started_at,
@@ -1682,6 +1733,8 @@ def build_fortigate_graph(
                 "stage": "fortigate_human_review",
                 "status": state.get("status", "draft"),
                 "judge_report": report,
+                "requires_human_input": state.get("requires_human_input", []),
+                "renderer_active": state.get("renderer_active", False),
                 "validation_report": state.get("validation_report", {}),
                 "standards_report": state.get("standards_report", {}),
                 "risk_report": state.get("risk_report", {}),
@@ -1781,8 +1834,8 @@ def build_fortigate_graph(
     graph.add_edge("build_objects_services_section", "build_firewall_policies_section")
     graph.add_edge("build_firewall_policies_section", "validate_config_sections")
     graph.add_edge("validate_config_sections", "assemble_sectional_config_artifacts")
-    graph.add_edge("assemble_sectional_config_artifacts", "validate_config")
-    graph.add_edge("generate_config_artifacts", "validate_config")
+    graph.add_edge("assemble_sectional_config_artifacts", "input_value_review")
+    graph.add_edge("generate_config_artifacts", "input_value_review")
     graph.add_edge("validate_config", "check_standards")
     graph.add_edge("check_standards", "risk_review")
     graph.add_edge("risk_review", "check_cli_contract")
