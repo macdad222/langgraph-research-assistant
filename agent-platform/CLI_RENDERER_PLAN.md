@@ -143,7 +143,7 @@ class FortiGateConfigModel(BaseModel):
     address_objects: list[AddressObjectModel] = []
     service_objects: list[ServiceObjectModel] = []
     firewall_policies: list[FirewallPolicyModel] = []
-    vpn: VpnModel | None = None
+    vpn: VpnModel | None = None             # DEFERRED to M2 (use raw_cli_appendix in M1)
     logging: LoggingModel | None = None
     requires_human_input: list[str] = []      # auto-collected from Placeholder tokens
 ```
@@ -200,9 +200,9 @@ When enabled, the FortiGate graph changes as follows:
 | `validate_config_sections` | replaced by Pydantic validation + referential-integrity check |
 | `assemble_sectional_config_artifacts` | replaced by `render_config` output |
 | `builder_review_config_artifacts` | removed (syntax guaranteed) — optional light design review kept |
-| `refine_config_artifacts` | removed for syntax; kept only for design-level edits if needed |
+| `refine_config_artifacts` | removed entirely (design fixes go through patch-model -> re-render, never CLI edits) |
 | `frontier_model_judge` | kept, but rubric focuses on DESIGN/coverage, not CLI syntax |
-| `regenerate_config_after_judge` | becomes "adjust the structured model + re-render" (cheap) |
+| `regenerate_config_after_judge` | becomes a targeted "patch the structured model + re-render" (cheap); the ONLY design-fix path |
 | `autonomous_repair_config_artifacts` | only runs for *semantic* gaps (e.g., missing object), not syntax |
 
 New nodes:
@@ -292,9 +292,11 @@ Deploy via the existing flow: edit on Mac clone -> commit/push ->
 
 ## 14. Milestones / deliverables
 - **M1 — Schema + renderer core**: `fortigate_render_models.py`, `fortigate_renderer.py`,
-  `templates/fortios/7.4/*.j2`, unit + round-trip tests. Flag off. (No graph change.)
-- **M2 — Graph integration**: `build_config_model` + `render_config` nodes, flag wiring in
-  `main.py` + `scripts/agent-platform`, legacy fallback. Shadow-mode compare harness.
+  `templates/fortios/7.4/*.j2`, unit + round-trip tests. Flag off. No graph change.
+  VPN models excluded (deferred to M2); `raw_cli_appendix` covers VPN in the interim.
+- **M2 — Graph integration + VPN**: single `build_config_model` + `render_config` nodes,
+  flag wiring in `main.py` + `scripts/agent-platform`, legacy fallback, shadow-mode compare
+  harness. Add typed VPN models (IPsec phase1/2, SSL-VPN portal) + templates.
 - **M3 — Validators**: typed referential-integrity + curated 7.4 linter; regression
   fixtures for the 7 jakes errors. Prune syntax-only LLM nodes when flag on.
 - **M4 — Benchmark + promote**: replay fixtures, Sonnet-judge, latency measurement vs
@@ -326,8 +328,11 @@ agent-platform/tests/test_renderer_*.py           # unit / round-trip / regressi
 
 ---
 
-## 17. Open questions
-- Do we model VPN (IPsec phase1/2, SSL-VPN portal) in M1 or defer to M2? (jakes needs it.)
-- Single `build_config_model` call vs. keep the 6-section split feeding the model? (Leaning
-  single call for latency; section split only if model output quality suffers.)
-- Keep a thin design-only `refine` pass, or let the judge -> adjust-model loop cover it?
+## 17. Review decisions (2026-05-31)
+- **VPN (IPsec phase1/2, SSL-VPN): DEFERRED to M2.** M1 ships without VPN models; the jakes
+  IPsec requirement uses `raw_cli_appendix` (human-reviewed) until M2 adds typed VPN.
+- **Structured model production: SINGLE `build_config_model` call** for the whole model
+  (lowest latency). Revisit the 6-section split only if single-call output quality suffers.
+- **Design-level fixes: NO separate refine pass.** The judge feeds a targeted "patch the
+  model" call, then we deterministically re-render (judge -> patch-model -> re-render).
+  Nothing ever edits CLI text directly, so the syntax guarantee holds end-to-end.
