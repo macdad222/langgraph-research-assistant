@@ -5,7 +5,7 @@ config system interface
 {% if i.vlan_id is not none %}
         set type vlan
         set interface "{{ i.parent_interface }}"
-        set vlanid {{ i.vlan_id }}
+        set vlanid {{ i.vlan_id | val }}
 {% endif %}
 {% if i.mode == 'dhcp' %}
         set mode dhcp

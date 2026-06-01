@@ -87,6 +87,9 @@ BUILTIN_SERVICES = {
 
 INTERFACE_SPECIAL = {"any"}
 ADDRESS_SPECIAL = {"all", "none"}
+# FortiOS ships with these SSL-VPN web portals; a config may reference them without
+# (re)defining a portal of the same name.
+BUILTIN_SSL_PORTALS = {"full-access", "web-access", "tunnel-access", "default"}
 
 
 def _is_interface_ref(name: str, declared: set[str]) -> bool:
@@ -101,7 +104,7 @@ def _is_interface_ref(name: str, declared: set[str]) -> bool:
 class InterfaceModel(BaseModel):
     name: str = Field(..., min_length=1)
     role: Literal["lan", "wan", "dmz", "mgmt", "undefined"] = "lan"
-    vlan_id: Optional[int] = Field(default=None, ge=1, le=4094)
+    vlan_id: Optional[Union[int, Placeholder]] = None
     parent_interface: Optional[str] = None
     mode: Literal["static", "dhcp", "pppoe"] = "static"
     ip: Optional[Value] = None  # "10.0.0.1 255.255.255.0"
@@ -180,9 +183,9 @@ class SdwanMemberModel(BaseModel):
 
 class SdwanSlaThresholdModel(BaseModel):
     id: int = Field(default=1, ge=1)
-    latency_threshold: Optional[int] = None
-    jitter_threshold: Optional[int] = None
-    packetloss_threshold: Optional[int] = None
+    latency_threshold: Optional[Union[int, Placeholder]] = None
+    jitter_threshold: Optional[Union[int, Placeholder]] = None
+    packetloss_threshold: Optional[Union[int, Placeholder]] = None
 
 
 class SdwanHealthCheckModel(BaseModel):
@@ -507,7 +510,11 @@ class FortiGateConfigModel(BaseModel):
                 for pool in ssl.tunnel_ip_pools:
                     if pool not in addr_names:
                         errors.append(f"ssl settings: tunnel-ip-pool '{pool}' is not a defined address")
-                if ssl.default_portal and ssl.default_portal not in portal_names:
+                if (
+                    ssl.default_portal
+                    and ssl.default_portal not in portal_names
+                    and ssl.default_portal not in BUILTIN_SSL_PORTALS
+                ):
                     errors.append(f"ssl settings: default-portal '{ssl.default_portal}' is not a defined portal")
 
         if errors:

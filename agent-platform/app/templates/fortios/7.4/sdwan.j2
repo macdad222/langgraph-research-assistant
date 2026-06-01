@@ -45,13 +45,13 @@ config system sdwan
 {% for s in h.sla %}
                 edit {{ s.id }}
 {% if s.latency_threshold is not none %}
-                    set latency-threshold {{ s.latency_threshold }}
+                    set latency-threshold {{ s.latency_threshold | val }}
 {% endif %}
 {% if s.jitter_threshold is not none %}
-                    set jitter-threshold {{ s.jitter_threshold }}
+                    set jitter-threshold {{ s.jitter_threshold | val }}
 {% endif %}
 {% if s.packetloss_threshold is not none %}
-                    set packetloss-threshold {{ s.packetloss_threshold }}
+                    set packetloss-threshold {{ s.packetloss_threshold | val }}
 {% endif %}
                 next
 {% endfor %}
