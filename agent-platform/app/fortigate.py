@@ -20,6 +20,10 @@ from app.fortigate_models import (
 )
 from app.fortigate_policy import check_cli_completeness, check_intent_completeness, check_section_completeness, check_standards_compliance, review_risk, validate_config_artifacts
 from app.standards import retrieve_fortigate_standards
+from app.fortigate_render_models import FortiGateConfigModel
+from app.fortigate_renderer import render_config
+from app.fortigate_config_builder import build_config_model as build_fortigate_config_model
+from app.fortigate_config_builder import normalize_fortios_version
 
 
 class FortiGateState(TypedDict, total=False):
@@ -36,6 +40,9 @@ class FortiGateState(TypedDict, total=False):
     intent_repaired: bool
     change_impact: dict[str, Any]
     config_sections: dict[str, Any]
+    config_model: dict[str, Any]
+    renderer_active: bool
+    renderer_fallback: bool
     config_artifacts: dict[str, Any]
     section_validation_report: dict[str, Any]
     cli_completeness_report: dict[str, Any]
@@ -694,6 +701,9 @@ def build_fortigate_graph(
     context_fallback_model_name: str = "",
     autonomous_repair_limit: int = 2,
     sectional_generation_enabled: bool = False,
+    renderer_enabled: bool = False,
+    config_model_model: ChatOpenAI | None = None,
+    config_model_model_name: str = "",
 ):
     normalized_builder_review_mode = builder_review_mode if builder_review_mode in {"off", "pre_refine"} else "pre_refine"
     normalized_refinement_mode = config_refinement_mode if config_refinement_mode in {"off", "pre_judge"} else "pre_judge"
@@ -705,6 +715,10 @@ def build_fortigate_graph(
     # falls back to the design model when no dedicated intent model is configured.
     intent_llm = intent_model or design_llm
     active_intent_model_name = intent_model_name or active_design_model_name or getattr(intent_llm, "model_name", "configured-model")
+    # The renderer path builds a typed config model with a structuring LLM (defaults to the
+    # intent model). Rendering itself is deterministic and uses no model.
+    render_llm = config_model_model or intent_llm
+    active_render_model_name = config_model_model_name or getattr(render_llm, "model_name", active_intent_model_name)
 
     async def ainvoke_with_context_fallback(model_to_use: ChatOpenAI, messages: list[Any], model_name: str, run_name: str | None = None) -> tuple[Any, str]:
         # run_name names this generation in Langfuse (otherwise everything logs as "ChatOpenAI").
@@ -1066,9 +1080,104 @@ def build_fortigate_graph(
             f"Deterministically assembled {len(state.get('config_sections', {}))} FortiGate config section(s).",
         )
 
+    async def _render_invoke(system_text: str, human_text: str, run_name: str) -> str:
+        response, _ = await ainvoke_with_context_fallback(
+            render_llm,
+            [SystemMessage(content=system_text), HumanMessage(content=human_text)],
+            active_render_model_name,
+            run_name=run_name,
+        )
+        return str(response.content)
+
+    def _render_context(state: FortiGateState, *, judge: bool = False) -> dict[str, Any]:
+        context = {
+            "intake": state.get("intake", {}),
+            "fortigate_design": state.get("fortigate_design", {}),
+            "implementation_intent": state.get("implementation_intent", {}),
+            "intent_completeness_report": state.get("intent_completeness_report", {}),
+            "change_impact": state.get("change_impact", {}),
+            "standards": _standards_payload(state.get("standards", [])),
+        }
+        if judge:
+            context["previous_config_model"] = state.get("config_model", {})
+            context["judge_report"] = state.get("judge_report", {})
+            context["validation_report"] = state.get("validation_report", {})
+            context["standards_report"] = state.get("standards_report", {})
+            context["risk_report"] = state.get("risk_report", {})
+        return context
+
+    def _render_fortios_version(state: FortiGateState) -> str:
+        return normalize_fortios_version(str(state.get("intake", {}).get("fortios_version", "")))
+
+    async def build_config_model_node(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        model_obj, errors = await build_fortigate_config_model(
+            _render_invoke,
+            _render_context(state),
+            fortios_version=_render_fortios_version(state),
+            retries=1,
+        )
+        if model_obj is None:
+            return _trace_update(
+                state,
+                {"renderer_fallback": True, "renderer_active": False},
+                "build_config_model",
+                started_at,
+                started_perf,
+                f"Config model build failed after retries ({len(errors)} error(s)); falling back to LLM CLI path.",
+                branch="fallback",
+            )
+        return _trace_update(
+            state,
+            {"config_model": model_obj.model_dump(mode="json"), "renderer_active": True, "renderer_fallback": False},
+            "build_config_model",
+            started_at,
+            started_perf,
+            "Built structured FortiGate config model from implementation intent.",
+        )
+
+    async def render_config_artifacts(state: FortiGateState) -> FortiGateState:
+        started_at, started_perf = _trace_start()
+        try:
+            model_obj = FortiGateConfigModel(**state.get("config_model", {}))
+            artifacts = render_config(model_obj)
+        except Exception as exc:
+            artifacts = {
+                "cli_config": _fallback_cli(state.get("intake", {})),
+                "safety_label": "DRAFT ONLY - NOT APPLIED TO DEVICE",
+                "rendered_by": "deterministic-renderer@error",
+            }
+            return _trace_update(
+                state,
+                {"config_artifacts": artifacts, "renderer_fallback": True},
+                "render_config_artifacts",
+                started_at,
+                started_perf,
+                f"Deterministic render failed unexpectedly: {exc}",
+                branch="fallback",
+            )
+        human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
+        return _trace_update(
+            state,
+            {
+                "config_artifacts": artifacts,
+                "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *human_inputs])),
+            },
+            "render_config_artifacts",
+            started_at,
+            started_perf,
+            f"Rendered FortiGate CLI deterministically ({artifacts.get('rendered_by', '')}).",
+        )
+
     def route_after_change_impact(state: FortiGateState) -> str:
-        _ = state
+        if renderer_enabled:
+            return "renderer"
         return "sectional" if sectional_generation_enabled else "monolith"
+
+    def route_after_build_model(state: FortiGateState) -> str:
+        if state.get("renderer_fallback"):
+            return "sectional" if sectional_generation_enabled else "monolith"
+        return "render"
 
     async def validate_config(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
@@ -1355,6 +1464,10 @@ def build_fortigate_graph(
         )
 
     def route_after_risk_review(state: FortiGateState) -> str:
+        # Renderer path: syntax is guaranteed by construction, so skip builder review,
+        # text refinement, and section repair (which all edit CLI text). Go straight to judge.
+        if state.get("renderer_active"):
+            return "judge"
         if normalized_builder_review_mode == "pre_refine" and not state.get("config_builder_review"):
             return "builder_review"
         if normalized_refinement_mode == "pre_judge" and not state.get("config_refinement"):
@@ -1385,6 +1498,42 @@ def build_fortigate_graph(
 
     async def regenerate_config_after_judge(state: FortiGateState) -> FortiGateState:
         started_at, started_perf = _trace_start()
+        # Renderer path: patch the structured model from judge feedback and re-render
+        # deterministically. CLI text is never hand-edited, so the syntax guarantee holds.
+        if state.get("renderer_active") and state.get("config_model"):
+            model_obj, errors = await build_fortigate_config_model(
+                _render_invoke,
+                _render_context(state, judge=True),
+                fortios_version=_render_fortios_version(state),
+                retries=1,
+                judge_context=state.get("judge_report", {}),
+                run_name="patch_config_model",
+            )
+            if model_obj is None:
+                return _trace_update(
+                    state,
+                    {},
+                    "regenerate_config_after_judge",
+                    started_at,
+                    started_perf,
+                    f"Patch-model failed ({len(errors)} error(s)); kept prior rendered artifacts.",
+                    branch="no-op",
+                )
+            artifacts = render_config(model_obj)
+            human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
+            return _trace_update(
+                state,
+                {
+                    "config_model": model_obj.model_dump(mode="json"),
+                    "config_artifacts": artifacts,
+                    "requires_human_input": list(dict.fromkeys([*state.get("requires_human_input", []), *human_inputs])),
+                },
+                "regenerate_config_after_judge",
+                started_at,
+                started_perf,
+                "Patched config model from judge feedback and re-rendered deterministically.",
+                branch="patched-rerender",
+            )
         response, used_model_name = await ainvoke_with_context_fallback(
             model,
             [
@@ -1435,6 +1584,12 @@ def build_fortigate_graph(
     def route_after_judge(state: FortiGateState) -> str:
         report = state.get("judge_report", {})
         verdict = report.get("verdict", "needs_revision")
+        # Renderer path: all design fixes go through patch-model -> re-render (the "regenerate"
+        # node is renderer-aware). Never use the CLI-editing repair/revise nodes.
+        if state.get("renderer_active"):
+            if verdict == "needs_revision" and int(state.get("judge_iterations", 0) or 0) < 2:
+                return "regenerate"
+            return "human_review" if human_review_interrupt else "finalize"
         review_item_count = _judge_review_item_count(report)
         auto_fixable, requires_human = _classify_judge_items(report)
         if verdict == "needs_revision" and auto_fixable and int(state.get("autonomous_repair_iterations", 0) or 0) < autonomous_repair_limit:
@@ -1509,6 +1664,8 @@ def build_fortigate_graph(
     graph.add_node("build_firewall_policies_section", build_firewall_policies_section)
     graph.add_node("validate_config_sections", validate_config_sections)
     graph.add_node("assemble_sectional_config_artifacts", assemble_sectional_config_artifacts)
+    graph.add_node("build_config_model", build_config_model_node)
+    graph.add_node("render_config_artifacts", render_config_artifacts)
     graph.add_node("validate_config", validate_config)
     graph.add_node("check_standards", check_standards)
     graph.add_node("risk_review", risk_review)
@@ -1537,7 +1694,9 @@ def build_fortigate_graph(
     graph.add_edge("build_implementation_intent", "check_intent_contract")
     graph.add_conditional_edges("check_intent_contract", route_after_intent_check, {"repair": "repair_implementation_intent", "continue": "analyze_change_impact"})
     graph.add_edge("repair_implementation_intent", "check_intent_contract")
-    graph.add_conditional_edges("analyze_change_impact", route_after_change_impact, {"monolith": "generate_config_artifacts", "sectional": "build_interfaces_dhcp_section"})
+    graph.add_conditional_edges("analyze_change_impact", route_after_change_impact, {"monolith": "generate_config_artifacts", "sectional": "build_interfaces_dhcp_section", "renderer": "build_config_model"})
+    graph.add_conditional_edges("build_config_model", route_after_build_model, {"render": "render_config_artifacts", "sectional": "build_interfaces_dhcp_section", "monolith": "generate_config_artifacts"})
+    graph.add_edge("render_config_artifacts", "validate_config")
     graph.add_edge("build_interfaces_dhcp_section", "build_fortiswitch_section")
     graph.add_edge("build_fortiswitch_section", "build_wifi_section")
     graph.add_edge("build_wifi_section", "build_sdwan_routing_section")

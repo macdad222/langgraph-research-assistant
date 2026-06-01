@@ -1311,6 +1311,7 @@ async def lifespan(app: FastAPI):
     # implementation_intent has its own model knob (bake-off winner differs from design);
     # defaults to the design model when unset.
     fortigate_intent_model_name = os.getenv("FORTIGATE_INTENT_MODEL_NAME", fortigate_design_model_name)
+    fortigate_render_model_name = os.getenv("FORTIGATE_RENDER_MODEL_NAME", fortigate_intent_model_name)
     fortigate_autonomous_repair_model_name = os.getenv("FORTIGATE_AUTONOMOUS_REPAIR_MODEL_NAME", model_name)
     fortigate_autonomous_repair_temperature = get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_TEMPERATURE", 0.4)
     # Global toggle for reasoning/thinking on the FortiGate review/repair/judge roles. Defaults to
@@ -1392,6 +1393,18 @@ async def lifespan(app: FastAPI):
         extra_body=fortigate_model_extra_body(passthrough=True),
         max_tokens=design_max_output_tokens,
     )
+    # Renderer path (M2): structuring model that fills the typed FortiGateConfigModel.
+    # Defaults to the intent model unless FORTIGATE_RENDER_MODEL_NAME overrides it.
+    fortigate_render_model = fortigate_intent_model
+    if fortigate_render_model_name != fortigate_intent_model_name:
+        fortigate_render_model = make_chat_model(
+            model_name=fortigate_render_model_name,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=default_temperature,
+            extra_body=fortigate_model_extra_body(passthrough=True),
+            max_tokens=design_max_output_tokens,
+        )
 
     async with AsyncRedisSaver.from_conn_string(redis_url) as checkpointer:
         await checkpointer.asetup()
@@ -1414,6 +1427,8 @@ async def lifespan(app: FastAPI):
         app.state.fortigate_context_fallback_temperature = get_float_env("FORTIGATE_CONTEXT_FALLBACK_TEMPERATURE", 0.2)
         app.state.fortigate_autonomous_repair_limit = int(get_float_env("FORTIGATE_AUTONOMOUS_REPAIR_LIMIT", 1))
         app.state.fortigate_sectional_generation_enabled = get_bool_env("FORTIGATE_SECTIONAL_GENERATION_ENABLED", False)
+        app.state.fortigate_renderer_enabled = get_bool_env("FORTIGATE_RENDERER_ENABLED", False)
+        app.state.fortigate_render_model_name = fortigate_render_model_name
         app.state.fortigate_design_timeout_seconds = get_float_env("FORTIGATE_DESIGN_TIMEOUT_SECONDS", 1800.0)
         app.state.fortigate_design_job_semaphore = asyncio.Semaphore(max(1, get_int_env("FORTIGATE_DESIGN_CONCURRENCY", 1)))
         app.state.fortigate_design_job_tasks = {}
@@ -1443,6 +1458,7 @@ async def lifespan(app: FastAPI):
         app.state.fortigate_generation_model = fortigate_generation_model
         app.state.fortigate_design_model = fortigate_design_model
         app.state.fortigate_intent_model = fortigate_intent_model
+        app.state.fortigate_render_model = fortigate_render_model
         app.state.research_graph = build_research_graph(llm, checkpointer, memory_retriever=retrieve_research_memory)
         app.state.interactive_research_graph = build_research_graph(
             llm,
@@ -1514,6 +1530,9 @@ async def lifespan(app: FastAPI):
             context_fallback_model_name=app.state.fortigate_context_fallback_model_name,
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
             sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
+            renderer_enabled=app.state.fortigate_renderer_enabled,
+            config_model_model=fortigate_render_model,
+            config_model_model_name=fortigate_render_model_name,
         )
         app.state.interactive_fortigate_graph = build_fortigate_graph(
             fortigate_generation_model,
@@ -1538,6 +1557,9 @@ async def lifespan(app: FastAPI):
             context_fallback_model_name=app.state.fortigate_context_fallback_model_name,
             autonomous_repair_limit=app.state.fortigate_autonomous_repair_limit,
             sectional_generation_enabled=app.state.fortigate_sectional_generation_enabled,
+            renderer_enabled=app.state.fortigate_renderer_enabled,
+            config_model_model=fortigate_render_model,
+            config_model_model_name=fortigate_render_model_name,
         )
         app.state.network_design_graph = build_network_design_graph(network_package_model, checkpointer, handoff_model=network_handoff_model)
         try:

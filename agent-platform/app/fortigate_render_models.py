@@ -265,6 +265,52 @@ class LoggingModel(BaseModel):
     fortianalyzer: Optional[FortiAnalyzerModel] = None
 
 
+# --- VPN models (M2) ------------------------------------------------------------------
+
+
+class IPsecPhase1Model(BaseModel):
+    name: str = Field(..., min_length=1)
+    interface: str = Field(..., min_length=1)  # underlying WAN interface
+    remote_gw: Value
+    ike_version: Literal["1", "2"] = "2"
+    proposal: str = "aes256-sha256"
+    psksecret: Value  # almost always a placeholder
+    peertype: Literal["any", "one", "dialup"] = "any"
+    net_device: Literal["enable", "disable", ""] = ""
+    comments: str = ""
+
+
+class IPsecPhase2Model(BaseModel):
+    name: str = Field(..., min_length=1)
+    phase1name: str = Field(..., min_length=1)  # must reference a defined phase1
+    proposal: str = "aes256-sha256"
+    src_subnet: str = "0.0.0.0 0.0.0.0"
+    dst_subnet: str = "0.0.0.0 0.0.0.0"
+    pfs: Literal["enable", "disable", ""] = ""
+
+
+class SslVpnPortalModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    tunnel_mode: bool = True
+    split_tunneling: bool = True
+    ip_pools: list[str] = Field(default_factory=list)  # address object names
+
+
+class SslVpnSettingsModel(BaseModel):
+    listen_port: int = 10443
+    source_interface: list[str] = Field(default_factory=list)
+    source_address: list[str] = Field(default_factory=list)
+    default_portal: str = ""
+    tunnel_ip_pools: list[str] = Field(default_factory=list)
+
+
+class VpnModel(BaseModel):
+    ipsec_phase1: list[IPsecPhase1Model] = Field(default_factory=list)
+    ipsec_phase2: list[IPsecPhase2Model] = Field(default_factory=list)
+    ssl_portals: list[SslVpnPortalModel] = Field(default_factory=list)
+    ssl_settings: Optional[SslVpnSettingsModel] = None
+
+
 # --- top-level model ------------------------------------------------------------------
 
 
@@ -281,9 +327,10 @@ class FortiGateConfigModel(BaseModel):
     vips: list[VipModel] = Field(default_factory=list)
     sdwan: Optional[SdwanModel] = None
     static_routes: list[StaticRouteModel] = Field(default_factory=list)
+    vpn: Optional[VpnModel] = None
     firewall_policies: list[FirewallPolicyModel] = Field(default_factory=list)
     logging: Optional[LoggingModel] = None
-    # Escape hatch: stanzas not yet modelled (e.g. VPN in M1). Anything here is flagged
+    # Escape hatch: stanzas not yet modelled. Anything here is flagged
     # for mandatory human review and excluded from the "syntax guaranteed" claim.
     raw_cli_appendix: list[str] = Field(default_factory=list)
     # Non-token human follow-ups that are not placeholders (e.g. "confirm switch serials").
@@ -294,6 +341,9 @@ class FortiGateConfigModel(BaseModel):
         errors: list[str] = []
 
         declared_ifaces = {i.name for i in self.interfaces}
+        # IPsec phase1-interface entries create virtual interfaces policies/routes can use.
+        if self.vpn:
+            declared_ifaces |= {p.name for p in self.vpn.ipsec_phase1}
         zone_names = {z.name for z in self.zones}
         addr_names = (
             {a.name for a in self.address_objects}
@@ -399,6 +449,34 @@ class FortiGateConfigModel(BaseModel):
             if pol.poolname and pol.poolname not in addr_names:
                 # ippool names are not address objects, so only warn-by-not-erroring here.
                 pass
+
+        # vpn: phase2 must reference a phase1; ssl refs must resolve.
+        if self.vpn:
+            phase1_names = {p.name for p in self.vpn.ipsec_phase1}
+            portal_names = {p.name for p in self.vpn.ssl_portals}
+            for p1 in self.vpn.ipsec_phase1:
+                if not _is_interface_ref(p1.interface, declared_ifaces):
+                    errors.append(f"ipsec phase1 '{p1.name}': interface '{p1.interface}' is not defined")
+            for p2 in self.vpn.ipsec_phase2:
+                if p2.phase1name not in phase1_names:
+                    errors.append(f"ipsec phase2 '{p2.name}': phase1name '{p2.phase1name}' is not a defined phase1")
+            for portal in self.vpn.ssl_portals:
+                for pool in portal.ip_pools:
+                    if pool not in addr_names:
+                        errors.append(f"ssl portal '{portal.name}': ip_pool '{pool}' is not a defined address")
+            ssl = self.vpn.ssl_settings
+            if ssl:
+                for ref in ssl.source_interface:
+                    if not _is_interface_ref(ref, declared_ifaces):
+                        errors.append(f"ssl settings: source-interface '{ref}' is not defined")
+                for ref in ssl.source_address:
+                    if ref not in addr_names and ref not in ADDRESS_SPECIAL:
+                        errors.append(f"ssl settings: source-address '{ref}' is not a defined address")
+                for pool in ssl.tunnel_ip_pools:
+                    if pool not in addr_names:
+                        errors.append(f"ssl settings: tunnel-ip-pool '{pool}' is not a defined address")
+                if ssl.default_portal and ssl.default_portal not in portal_names:
+                    errors.append(f"ssl settings: default-portal '{ssl.default_portal}' is not a defined portal")
 
         if errors:
             raise ValueError("FortiGate config referential integrity failed:\n- " + "\n- ".join(errors))

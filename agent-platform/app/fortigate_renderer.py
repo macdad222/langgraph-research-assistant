@@ -35,6 +35,7 @@ SECTION_PLAN: list[tuple[str, str, Callable[[FortiGateConfigModel], Any]]] = [
     ("vips", "vip.j2", lambda m: m.vips),
     ("sdwan", "sdwan.j2", lambda m: m.sdwan),
     ("routing", "route.j2", lambda m: m.static_routes),
+    ("vpn", "vpn.j2", lambda m: m.vpn),
     ("firewall-policies", "policy.j2", lambda m: m.firewall_policies),
     ("logging", "logging.j2", lambda m: m.logging),
 ]
@@ -83,6 +84,7 @@ def _context(model: FortiGateConfigModel) -> dict[str, Any]:
         "vips": model.vips,
         "sdwan": model.sdwan,
         "static_routes": model.static_routes,
+        "vpn": model.vpn,
         "firewall_policies": model.firewall_policies,
         "logging": model.logging,
     }
@@ -90,7 +92,11 @@ def _context(model: FortiGateConfigModel) -> dict[str, Any]:
 
 def _object_tables(model: FortiGateConfigModel) -> dict[str, list[str]]:
     sdwan_zones = [z.name for z in model.sdwan.zones] if model.sdwan else []
+    vpn_names = []
+    if model.vpn:
+        vpn_names = [p.name for p in model.vpn.ipsec_phase1] + [p.name for p in model.vpn.ssl_portals]
     return {
+        "vpn": vpn_names,
         "interfaces_dhcp": [i.name for i in model.interfaces]
         + [f"dhcp:{d.interface}" for d in model.dhcp_servers],
         "fortiswitch": [],

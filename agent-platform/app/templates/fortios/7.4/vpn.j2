@@ -1,0 +1,65 @@
+{% if vpn.ipsec_phase1 %}
+config vpn ipsec phase1-interface
+{% for p in vpn.ipsec_phase1 %}
+    edit "{{ p.name }}"
+        set interface "{{ p.interface }}"
+        set ike-version {{ p.ike_version }}
+        set peertype {{ p.peertype }}
+{% if p.net_device %}
+        set net-device {{ p.net_device }}
+{% endif %}
+        set proposal {{ p.proposal }}
+        set remote-gw {{ p.remote_gw | val }}
+        set psksecret {{ p.psksecret | val }}
+{% if p.comments %}
+        set comments "{{ p.comments }}"
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if vpn.ipsec_phase2 %}
+config vpn ipsec phase2-interface
+{% for p in vpn.ipsec_phase2 %}
+    edit "{{ p.name }}"
+        set phase1name "{{ p.phase1name }}"
+        set proposal {{ p.proposal }}
+{% if p.pfs %}
+        set pfs {{ p.pfs }}
+{% endif %}
+        set src-subnet {{ p.src_subnet }}
+        set dst-subnet {{ p.dst_subnet }}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if vpn.ssl_portals %}
+config vpn ssl web portal
+{% for p in vpn.ssl_portals %}
+    edit "{{ p.name }}"
+        set tunnel-mode {{ 'enable' if p.tunnel_mode else 'disable' }}
+        set split-tunneling {{ 'enable' if p.split_tunneling else 'disable' }}
+{% if p.ip_pools %}
+        set ip-pools {{ p.ip_pools | names }}
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if vpn.ssl_settings %}
+config vpn ssl settings
+    set port {{ vpn.ssl_settings.listen_port }}
+{% if vpn.ssl_settings.source_interface %}
+    set source-interface {{ vpn.ssl_settings.source_interface | names }}
+{% endif %}
+{% if vpn.ssl_settings.source_address %}
+    set source-address {{ vpn.ssl_settings.source_address | names }}
+{% endif %}
+{% if vpn.ssl_settings.default_portal %}
+    set default-portal "{{ vpn.ssl_settings.default_portal }}"
+{% endif %}
+{% if vpn.ssl_settings.tunnel_ip_pools %}
+    set tunnel-ip-pools {{ vpn.ssl_settings.tunnel_ip_pools | names }}
+{% endif %}
+end
+{% endif %}
