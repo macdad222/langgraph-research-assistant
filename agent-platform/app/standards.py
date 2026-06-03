@@ -142,14 +142,23 @@ def _chunk_id(document: str, ordinal: int, text: str) -> str:
 def _topic_for_text(path: Path, text: str) -> str:
     haystack = f"{path.name} {text[:500]}".lower()
     topics = {
+        "security_profiles": ["utm", "security profile", "antivirus", "av profile", "ips", "intrusion prevention", "web filter", "application control", "dns filter", "ssl inspection", "deep inspection", "file filter", "fortiguard"],
+        "authentication": ["fsso", "ldap", "radius", "saml", "two-factor", "2fa", "mfa", "user group", "authentication", "trusted host", "admin access"],
+        "wifi": ["wifi", "wi-fi", "wireless", "ssid", "fortiap", "wlan", "captive portal"],
+        "fortiswitch": ["fortiswitch", "fortilink", "switch-controller", "managed switch"],
+        "ztna": ["ztna", "zero trust", "access proxy", "ztna proxy"],
+        "certificates": ["certificate", "pki", "ca cert", "ssl certificate", "scep"],
+        "qos": ["qos", "traffic shaping", "traffic shaper", "shaper", "bandwidth"],
         "sdwan": ["sd-wan", "sdwan", "sla", "performance"],
+        "vpn": ["vpn", "ipsec", "ssl-vpn"],
+        "nat": ["nat", "vip", "dnat", "snat"],
+        "routing": ["route", "bgp", "ospf", "static route"],
+        "dns_dhcp": ["dhcp", "dns server", "ddns", "dns filter"],
+        "system_hardening": ["hardening", "firmware", "config backup", "ntp", "management interface", "secure access", "admin password"],
+        "logging": ["log", "logging", "syslog", "fortianalyzer"],
+        "ha": ["ha", "cluster", "failover"],
         "firewall_policy": ["firewall policy", "policy", "utm", "security profile"],
         "interfaces": ["interface", "vlan", "zone", "switch"],
-        "routing": ["route", "bgp", "ospf", "static route"],
-        "nat": ["nat", "vip", "dnat", "snat"],
-        "vpn": ["vpn", "ipsec", "ssl-vpn"],
-        "ha": ["ha", "cluster", "failover"],
-        "logging": ["log", "logging", "syslog", "fortianalyzer"],
     }
     for topic, needles in topics.items():
         if any(needle in haystack for needle in needles):
@@ -617,6 +626,15 @@ def _requirement_keywords(text: str, topic: str) -> list[str]:
         "vpn": ["vpn", "ipsec", "tunnel"],
         "ha": ["ha", "backup", "redundant", "failover"],
         "logging": ["log", "logging", "syslog", "snmp", "fortianalyzer", "monitoring"],
+        "security_profiles": ["utm", "ips", "antivirus", "web-filter", "application-control", "ssl-inspection", "dns-filter"],
+        "authentication": ["fsso", "ldap", "radius", "mfa", "user", "admin"],
+        "wifi": ["wifi", "ssid", "fortiap", "wlan"],
+        "fortiswitch": ["fortiswitch", "fortilink", "switch"],
+        "ztna": ["ztna", "zero-trust", "proxy"],
+        "certificates": ["certificate", "pki", "ssl"],
+        "qos": ["qos", "shaping", "bandwidth"],
+        "dns_dhcp": ["dhcp", "dns", "ddns"],
+        "system_hardening": ["hardening", "firmware", "backup", "ntp", "management"],
     }
     selected = [word for word in words if word not in stop and len(word) > 3]
     merged = [*topic_terms.get(topic, []), *selected]
@@ -647,7 +665,7 @@ def extract_standard_requirements(chunks: list[FortiGateStandardChunk | dict[str
         topic = str(chunk.get("topic") or "general")
         sentences = [part.strip(" -•\t\n") for part in re.split(r"(?<=[.!?])\s+|\n+", text) if part.strip()]
         candidates = [sentence for sentence in sentences if normative.search(sentence)]
-        if not candidates and topic in {"logging", "sdwan", "firewall_policy", "routing", "interfaces"}:
+        if not candidates and topic in {"logging", "sdwan", "firewall_policy", "routing", "interfaces", "security_profiles", "authentication", "wifi", "fortiswitch", "ztna", "certificates", "qos", "dns_dhcp", "system_hardening"}:
             candidates = sentences[:2]
         for sentence in candidates[:3]:
             cleaned = re.sub(r"\s+", " ", sentence).strip()
