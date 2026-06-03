@@ -8,10 +8,10 @@ config firewall service custom
 {% else %}
         set protocol TCP/UDP/SCTP
 {% if s.tcp_portrange %}
-        set tcp-portrange {{ s.tcp_portrange }}
+        set tcp-portrange {{ s.tcp_portrange | val }}
 {% endif %}
 {% if s.udp_portrange %}
-        set udp-portrange {{ s.udp_portrange }}
+        set udp-portrange {{ s.udp_portrange | val }}
 {% endif %}
 {% endif %}
 {% if s.comment %}

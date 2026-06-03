@@ -7,6 +7,22 @@ from langchain_openai import ChatOpenAI
 from app.fortigate_models import FortiGateJudgeReport
 
 
+def _as_str_list(value: Any) -> list[str]:
+    """Normalize a judge list field into a list of non-empty strings.
+
+    Guards the case where a model returns a single string (e.g. a one-line
+    ``human_reviewer_focus`` like "Verify ...") for a field declared as a list:
+    iterating that string yields one entry per CHARACTER. Wrap a bare string in a
+    single-element list before stringifying each item."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    elif not isinstance(value, (list, tuple, set)):
+        value = [value]
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def _extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -58,12 +74,12 @@ async def run_frontier_judge(model: ChatOpenAI, review_packet: dict[str, Any], j
         verdict = "needs_revision"
     return FortiGateJudgeReport(
         verdict=verdict,
-        blocking_issues=[str(item) for item in data.get("blocking_issues") or []],
-        warnings=[str(item) for item in data.get("warnings") or []],
-        standards_concerns=[str(item) for item in data.get("standards_concerns") or []],
-        config_risks=[str(item) for item in data.get("config_risks") or []],
-        missing_questions=[str(item) for item in data.get("missing_questions") or []],
-        recommended_revisions=[str(item) for item in data.get("recommended_revisions") or []],
-        human_reviewer_focus=[str(item) for item in data.get("human_reviewer_focus") or []],
+        blocking_issues=_as_str_list(data.get("blocking_issues")),
+        warnings=_as_str_list(data.get("warnings")),
+        standards_concerns=_as_str_list(data.get("standards_concerns")),
+        config_risks=_as_str_list(data.get("config_risks")),
+        missing_questions=_as_str_list(data.get("missing_questions")),
+        recommended_revisions=_as_str_list(data.get("recommended_revisions")),
+        human_reviewer_focus=_as_str_list(data.get("human_reviewer_focus")),
         model=judge_model_name,
     )

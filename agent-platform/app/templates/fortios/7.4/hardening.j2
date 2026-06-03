@@ -1,0 +1,45 @@
+config system global
+{% if system_hardening.timezone | val %}
+    set timezone "{{ system_hardening.timezone | val }}"
+{% endif %}
+    set admin-https-redirect {{ 'enable' if system_hardening.admin_https_redirect else 'disable' }}
+    set admin-ssh-v1 {{ 'enable' if system_hardening.admin_ssh_v1 else 'disable' }}
+    set admintimeout {{ system_hardening.admintimeout }}
+    set strong-crypto {{ 'enable' if system_hardening.strong_crypto else 'disable' }}
+{% if system_hardening.admin_https_ssl_versions %}
+    set admin-https-ssl-versions {{ system_hardening.admin_https_ssl_versions }}
+{% endif %}
+    set pre-login-banner {{ 'enable' if system_hardening.pre_login_banner else 'disable' }}
+end
+{% if system_hardening.ntp %}
+config system ntp
+    set type {{ system_hardening.ntp.type }}
+    set ntpsync enable
+    set syncinterval {{ system_hardening.ntp.sync_interval }}
+{% if system_hardening.ntp.type == 'custom' and system_hardening.ntp.servers %}
+    config ntpserver
+{% for s in system_hardening.ntp.servers %}
+        edit {{ loop.index }}
+            set server {{ s | val }}
+        next
+{% endfor %}
+    end
+{% endif %}
+end
+{% endif %}
+{% if system_hardening.password_policy %}
+config system password-policy
+    set status {{ 'enable' if system_hardening.password_policy.status else 'disable' }}
+{% if system_hardening.password_policy.status %}
+    set minimum-length {{ system_hardening.password_policy.minimum_length }}
+    set min-lower-case-letter {{ system_hardening.password_policy.min_lower_case_letter }}
+    set min-upper-case-letter {{ system_hardening.password_policy.min_upper_case_letter }}
+    set min-number {{ system_hardening.password_policy.min_number }}
+    set min-non-alphanumeric {{ system_hardening.password_policy.min_non_alphanumeric }}
+{% if system_hardening.password_policy.expire_days is not none %}
+    set expire-day {{ system_hardening.password_policy.expire_days }}
+{% endif %}
+    set reuse-password {{ system_hardening.password_policy.reuse_password }}
+{% endif %}
+end
+{% endif %}

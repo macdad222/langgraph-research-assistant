@@ -94,6 +94,13 @@ class FortiGateHandoffPayload(BaseModel):
     wan_circuits: list[dict[str, Any]] = Field(default_factory=list)
     lan_networks: list[dict[str, Any]] = Field(default_factory=list)
     security_zones: list[str] = Field(default_factory=list)
+    # Additive structured topics consumed by the deterministic renderer (default-empty,
+    # back-compatible with the existing prose fields below).
+    wifi_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    fortiswitch_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    system_hardening_requirements: dict[str, Any] = Field(default_factory=dict)
+    admin_access_requirements: dict[str, Any] = Field(default_factory=dict)
+    security_profile_requirements: dict[str, Any] = Field(default_factory=dict)
     firewall_policy_intent: str = ""
     nat_requirements: str = ""
     vpn_requirements: str = ""

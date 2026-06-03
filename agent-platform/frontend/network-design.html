@@ -1177,6 +1177,9 @@
       setFgPhase("building");
       let resp = await postFgInteractive("/fortigate/interactive", {
         intake,
+        // Pass the full structured handoff so the backend can seed fortigate_handoff state
+        // (the intake field is parsed as FortiGateIntake and drops the *_requirements topics).
+        fortigate_handoff: currentHandoff || intake || {},
         existing_config: "",
         thread_id: `${currentRun?.thread_id || "network-design"}-${Date.now()}-fg`,
         mode: "interactive"
@@ -1273,6 +1276,22 @@
     }
 
     const guidedOptionTemplates = {
+      security_profiles: [
+        "Apply the Fortinet recommended UTM baseline (IPS, antivirus, web + DNS filtering, application control) with SSL certificate inspection on outbound traffic.",
+        "Minimal profiles for this phase — IPS and antivirus on outbound traffic only."
+      ],
+      admin_access: [
+        "Require MFA for all administrators, restrict admin access to trusted management subnets, and integrate with RADIUS/LDAP for central authentication.",
+        "Local admin accounts with a strong password policy and trusted-host restrictions only for this phase."
+      ],
+      wireless_switching: [
+        "No managed wireless or switching at this site.",
+        "Managed FortiAP SSIDs (corporate + guest) and FortiSwitch via FortiLink, with per-VLAN assignment."
+      ],
+      system_hardening: [
+        "Enforce CIS-aligned hardening: HTTPS/SSH management only, strong password policy, NTP, automatic configuration backup, and PSIRT firmware tracking.",
+        "Standard hardening baseline — disable insecure management protocols and set an admin password policy."
+      ],
       wan: [
         "Dual WAN primary/backup: ISP1 is primary internet, ISP2 is backup/failover. Use static IP details where available and DHCP only if the circuit requires it.",
         "Dual WAN load-sharing: use both circuits for outbound traffic with health checks and fail over if either circuit degrades."
@@ -1340,7 +1359,7 @@
     }
 
     function buildInitialQuestionBatch() {
-      return missingCriticalFields().filter((field) => field !== "site_and_goal").slice(0, 7);
+      return missingCriticalFields().filter((field) => field !== "site_and_goal").slice(0, 11);
     }
 
     function updateReadinessUi() {

@@ -20,8 +20,13 @@ from app.fortigate_models import (
 )
 from app.fortigate_policy import check_cli_completeness, check_intent_completeness, check_section_completeness, check_standards_compliance, review_risk, validate_config_artifacts
 from app.standards import retrieve_fortigate_standards
-from app.fortigate_render_models import FortiGateConfigModel, collect_placeholders, substitute_placeholder_dicts
-from app.fortigate_renderer import render_config
+from app.fortigate_render_models import (
+    PLACEHOLDER_TOKEN_RE,
+    FortiGateConfigModel,
+    collect_placeholders,
+    substitute_placeholder_dicts,
+)
+from app.fortigate_renderer import check_block_balance, render_config
 from app.fortigate_config_builder import build_config_model as build_fortigate_config_model
 from app.fortigate_config_builder import normalize_fortios_version
 from app.fortigate_config_builder import recommend_placeholder_values
@@ -36,6 +41,7 @@ class FortiGateState(TypedDict, total=False):
     missing_questions: list[dict[str, Any]]
     logical_design: dict[str, Any]
     fortigate_design: dict[str, Any]
+    fortigate_handoff: dict[str, Any]
     implementation_intent: dict[str, Any]
     intent_completeness_report: dict[str, Any]
     intent_repaired: bool
@@ -128,6 +134,128 @@ def _as_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+_RHI_TOKEN_RE = re.compile(r"^Provide value for\s+(\S+?)\s*(?::\s*(.*))?$")
+
+
+def _rendered_token_set(
+    config_artifacts: dict[str, Any], config_model: dict[str, Any]
+) -> dict[str, str]:
+    """Return the FULL set of rendered placeholder tokens -> human prompt.
+
+    Sources, unioned (so coverage does not depend on how the model serialized any one
+    placeholder): (a) the structured model's explicit Placeholders, (b) a regex scan of
+    the rendered CLI, and (c) the renderer's ``requires_human_input`` strings. Tokens are
+    kept in their RAW form (e.g. ``<CORP_IP_MASK>``) so they still match Placeholder
+    tokens and substitute cleanly into the CLI."""
+    tokens: dict[str, str] = {}
+    artifacts = config_artifacts or {}
+
+    if config_model:
+        try:
+            model_obj = FortiGateConfigModel(**config_model)
+            for token, prompt in collect_placeholders(model_obj).items():
+                if not tokens.get(token):
+                    tokens[token] = prompt or ""
+        except Exception:
+            pass
+
+    cli = str(artifacts.get("cli_config") or "")
+    for match in PLACEHOLDER_TOKEN_RE.findall(cli):
+        tokens.setdefault(match, "")
+
+    for entry in _as_list(artifacts.get("requires_human_input")):
+        matched = _RHI_TOKEN_RE.match(entry)
+        if matched:
+            token = matched.group(1).strip()
+            prompt = (matched.group(2) or "").strip()
+            if prompt and not tokens.get(token):
+                tokens[token] = prompt
+            else:
+                tokens.setdefault(token, "")
+        else:
+            for token in PLACEHOLDER_TOKEN_RE.findall(entry):
+                tokens.setdefault(token, "")
+
+    return tokens
+
+
+def _union_site_value_items(
+    input_recommendations: list[dict[str, Any]],
+    config_artifacts: dict[str, Any],
+    config_model: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build the mandatory site-value question list as the UNION of the renderer's
+    complete token set and the (smaller) recommendation set (P0b).
+
+    Every rendered placeholder becomes a question regardless of how the model serialized
+    it; recommendations contribute recommended_value/confidence/prompt when available.
+    Returns ``[]`` when there is no rendered token set (caller falls back)."""
+    full_tokens = _rendered_token_set(config_artifacts, config_model)
+    if not full_tokens:
+        return []
+
+    rec_by_token: dict[str, dict[str, Any]] = {}
+    ordered_rec_tokens: list[str] = []
+    for item in input_recommendations or []:
+        if not isinstance(item, dict):
+            continue
+        token = str(item.get("token") or "").strip()
+        if token and token not in rec_by_token:
+            rec_by_token[token] = item
+            ordered_rec_tokens.append(token)
+
+    # Recommendation-backed tokens first (they carry prefilled values), then the rest.
+    ordered = [t for t in ordered_rec_tokens if t in full_tokens]
+    ordered += [t for t in full_tokens if t not in rec_by_token]
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for token in ordered:
+        if token in seen:
+            continue
+        seen.add(token)
+        rec = rec_by_token.get(token) or {}
+        prompt = str(rec.get("prompt") or full_tokens.get(token) or "").strip()
+        if not prompt:
+            prompt = f"Provide value for {token}"
+        items.append(
+            {
+                "token": token,
+                "prompt": prompt,
+                "recommended_value": str(rec.get("recommended_value") or ""),
+                "confidence": str(rec.get("confidence") or "low"),
+            }
+        )
+    return items
+
+
+def _text_substitute_artifacts(
+    config_artifacts: dict[str, Any], values: dict[str, Any]
+) -> dict[str, Any]:
+    """Fallback application of reviewed values directly into the rendered CLI text (P1a).
+
+    Used when strict model re-validation fails: never discard the user's entered values.
+    Replaces each token string in ``cli_config`` with its value and re-derives
+    ``requires_human_input`` and ``structure_issues`` from the substituted CLI."""
+    artifacts = dict(config_artifacts or {})
+    cli = str(artifacts.get("cli_config") or "")
+    if cli:
+        for token, value in (values or {}).items():
+            if value in (None, ""):
+                continue
+            cli = cli.replace(str(token), str(value))
+        artifacts["cli_config"] = cli
+        remaining: list[str] = []
+        seen: set[str] = set()
+        for match in PLACEHOLDER_TOKEN_RE.findall(cli):
+            if match not in seen:
+                seen.add(match)
+                remaining.append(match)
+        artifacts["requires_human_input"] = [f"Provide value for {token}" for token in remaining]
+        artifacts["structure_issues"] = check_block_balance(cli)
+    return artifacts
 
 
 def _judge_review_item_count(report: dict[str, Any]) -> int:
@@ -624,6 +752,9 @@ def _section_standards_payload(state: FortiGateState, section_name: str) -> list
         "sdwan_routing": ("sdwan", "wan", "route"),
         "objects_services": ("object", "service", "firewall"),
         "firewall_policies": ("policy", "firewall", "segmentation"),
+        "system_hardening": ("hardening", "ntp", "password", "admin", "timeout", "management", "crypto"),
+        "admin_access": ("admin", "mfa", "two-factor", "trusted", "authentication", "fortitoken"),
+        "utm_profiles": ("utm", "ips", "antivirus", "web-filter", "inspection", "ssl", "security profile"),
     }.get(section_name, ())
     selected = []
     for item in state.get("standards", []):
@@ -837,8 +968,16 @@ def build_fortigate_graph(
                     content=(
                         "Return only JSON with key implementation_intent. Build a FortiGate implementation contract that the CLI "
                         "must satisfy before any config is generated. Include keys: interface_inventory, dhcp_plan, sdwan_plan, "
-                        "fortiswitch_plan, wifi_plan, policy_matrix, object_inventory, logging_plan, assumptions, "
-                        "requires_human_input. For every LAN/VLAN, "
+                        "fortiswitch_plan, wifi_plan, system_hardening, admin_access, security_profiles, policy_matrix, "
+                        "object_inventory, logging_plan, assumptions, requires_human_input. "
+                        "For system_hardening, include CIS-aligned management settings: ntp (servers or fortiguard), "
+                        "password_policy (minimum_length>=14 with complexity), admintimeout<=5, secure management "
+                        "(HTTPS/SSH only, disable ssh-v1, strong-crypto), timezone, and pre_login_banner. "
+                        "For admin_access, include named admins with accprofile, MFA (two_factor) for privileged admins, and "
+                        "trusted_hosts; put real passwords/trusted-host subnets in requires_human_input, never invent them. "
+                        "For security_profiles, define a standard UTM set (antivirus av-default, ips ips-default, web-filter "
+                        "web-default, and an SSL inspection profile) and which policies/egress they attach to. "
+                        "For every LAN/VLAN, "
                         "include name, vlan_id when known, subnet, gateway, zone, role, and dhcp_mode. For DHCP, decide enable, "
                         "disable, or needs_human_input; enable DHCP for user/guest VLANs when subnet and gateway are known unless "
                         "the intake says otherwise. For dual-WAN, include SD-WAN members, health_checks, steering_rules, and "
@@ -1097,6 +1236,9 @@ def build_fortigate_graph(
             "intake": state.get("intake", {}),
             "fortigate_design": state.get("fortigate_design", {}),
             "implementation_intent": state.get("implementation_intent", {}),
+            # Structured wifi/switch/hardening/admin/UTM topics from the network-design handoff
+            # so build_config_model sees them even when implementation_intent omits a domain.
+            "fortigate_handoff": state.get("fortigate_handoff", {}),
             "intent_completeness_report": state.get("intent_completeness_report", {}),
             "change_impact": state.get("change_impact", {}),
             "standards": _standards_payload(state.get("standards", [])),
@@ -1221,6 +1363,13 @@ def build_fortigate_graph(
 
     def _mandatory_site_value_items(state: FortiGateState) -> list[dict[str, Any]]:
         recs = [dict(item) for item in (state.get("input_recommendations") or []) if isinstance(item, dict)]
+        # P0b: build the question list from the FULL rendered token set, not just the
+        # (often smaller) recommendation set. This guarantees every rendered placeholder
+        # becomes a question regardless of how the model serialized it. Recommendations
+        # still contribute recommended_value/confidence/prompt when present.
+        unioned = _union_site_value_items(recs, state.get("config_artifacts") or {}, state.get("config_model") or {})
+        if unioned:
+            return unioned
         if recs:
             return recs
         seen: set[str] = set()
@@ -1286,14 +1435,25 @@ def build_fortigate_graph(
             model_obj = FortiGateConfigModel(**new_model_dict)
             artifacts = render_config(model_obj)
         except Exception as exc:
+            # P1a: strict re-validation failed (e.g. a group now references inline IPs the
+            # post-substitution model couldn't reconcile). NEVER discard the user's values:
+            # fall back to a text-level substitution into the rendered CLI and re-derive the
+            # remaining placeholders, while always persisting input_values.
+            artifacts = _text_substitute_artifacts(state.get("config_artifacts") or {}, values)
+            human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
             return _trace_update(
                 state,
-                {"input_values": values, "site_values_reviewed": True},
+                {
+                    "config_artifacts": artifacts,
+                    "requires_human_input": human_inputs,
+                    "input_values": values,
+                    "site_values_reviewed": True,
+                },
                 "input_value_review",
                 started_at,
                 started_perf,
-                f"Captured reviewed values but could not apply them to rendered model: {exc}",
-                branch="captured_apply_error",
+                f"Strict re-validation failed ({exc}); applied {len(values)} value(s) via text substitution; {len(human_inputs)} placeholder(s) remain.",
+                branch="captured_text_substitution",
             )
         human_inputs = [str(item) for item in artifacts.get("requires_human_input", [])]
         return _trace_update(

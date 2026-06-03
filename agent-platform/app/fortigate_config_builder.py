@@ -70,6 +70,42 @@ deterministic renderer turns into FortiOS CLI. Return ONLY JSON with a single to
   action(accept|deny), schedule, nat(bool), poolname, logtraffic(all|utm|disable),
   av_profile, ips_sensor, application_list, webfilter_profile, ssl_ssh_profile, comments}]
 - logging: {syslog_servers:[{server, port(int), mode(udp|reliable)}], fortianalyzer:{server, upload_option}}
+- system_hardening: {admin_https_redirect(bool), admin_ssh_v1(bool, keep false), admintimeout(int, <=5),
+  strong_crypto(bool), admin_https_ssl_versions(str "tlsv1-2 tlsv1-3"), pre_login_banner(bool), timezone(str id),
+  ntp:{servers:[ip/fqdn], type(fortiguard|custom), sync_interval(int)},
+  password_policy:{status(bool), minimum_length(int>=14), min_lower_case_letter(int), min_upper_case_letter(int),
+  min_number(int), min_non_alphanumeric(int), expire_days(int|null), reuse_password(enable|disable)}}
+  (Source: system_hardening plan in implementation_intent / fortigate_handoff. Use CIS-aligned defaults:
+   minimum_length>=14 with complexity, admintimeout<=5, HTTPS/SSH only, disable ssh-v1, strong-crypto on.
+   NEVER invent real NTP server addresses - use placeholders for them.)
+- admin_access: {admins:[{name, accprofile(default super_admin), trusted_hosts:["ip mask", ...],
+  two_factor(disable|fortitoken|email|sms), two_factor_email, password, comments}]}
+  (Enable MFA (two_factor) for privileged admins. NEVER invent passwords or real trusted-host subnets -
+   emit them as placeholder objects so the operator supplies them.)
+- utm_profiles: {antivirus:[{name, comment, http(bool), ftp, smtp, pop3, imap, outbreak_prevention(bool)}],
+  ips_sensors:[{name, comment, block_malicious_url(bool), extended_log(bool),
+  entries:[{id(int), severity, location, protocol, status, action}]}],
+  webfilter:[{name, comment, inspection_mode(flow|proxy), fortiguard_categories:[{category_id(int), action}]}],
+  ssl_ssh:[{name, comment, inspect_all(certificate-inspection|deep-inspection|disable)}]}
+  (Define a standard set named av-default, ips-default, web-default and reference the BUILT-IN ssl profile
+   "certificate-inspection" (or "deep-inspection"). Attach these to OUTBOUND/internet-egress accept policies
+   via the policy fields av_profile/ips_sensor/webfilter_profile/ssl_ssh_profile. Source: policy_matrix[].inspection_profile
+   plus the security_profiles plan/standards. Built-in ssl profiles do NOT need a definition here.)
+- managed_switches: [{switch_id(serial - usually a placeholder), fortilink(default "fortilink"),
+  ports:[{port, native_vlan(interface name), allowed_vlans:[interface names], poe_status(enable|disable)}]}]
+- switch_vlans: [{name, vlanid(int), interface(default "fortilink"), ip("A.B.C.D M.M.M.M")}]
+  (Map fortiswitch_plan: if FortiLink is enabled, emit one managed switch with a PLACEHOLDER serial; put
+   unknown VLAN/port-profile/port-map decisions into placeholders or extra_human_input. switch_vlans are
+   interface-like and may be referenced by zones/dhcp/policies.)
+- wifi: {vaps:[{name, ssid, security(wpa2-only-personal|wpa2-only-enterprise|wpa3-only-personal|open),
+  passphrase(placeholder for PSK), auth(psk|radius|usergroup), radius_server(placeholder), vlanid(int),
+  local_bridging(bool), mapped_interface(a defined VLAN interface name), guest_isolation(bool)}],
+  wtp_profiles:[{name, comment, platform_type(e.g. FAP231F), country, vaps:[VAP names]}],
+  managed_aps:[{name, serial(placeholder), wtp_profile, comment}]}
+  (Map wifi_plan: each ssid -> a vap; security_mode -> security + auth (enterprise=>auth radius + radius_server
+   placeholder; PSK=>auth psk + passphrase placeholder); vlan_mapping -> mapped_interface (the defined VLAN
+   interface, e.g. "vlan_corp"); guest_isolation -> guest_isolation. Unknown PSKs/RADIUS/AP serials MUST be
+   placeholders. If a vap sets vlanid + local_bridging it MUST also set mapped_interface (the bridge target).)
 - raw_cli_appendix: [strings] - ONLY for stanzas not covered above; flagged for human review.
 - extra_human_input: [strings] - non-placeholder follow-ups.
 
@@ -79,10 +115,24 @@ CRITICAL RULES (referential integrity is enforced and will reject your output ot
   ipsec phase2 phase1name, and ssl reference MUST point at something you defined (or a physical
   port like wan1/port1, "all" for addresses, "any" for interfaces, or a FortiOS built-in service).
 - A VLAN interface MUST set parent_interface.
+- switch_vlans names and wifi vap names are interface-like and count as "defined interfaces" for
+  zone/dhcp/policy references. managed_switch.fortilink, switch_vlan.interface, port native_vlan/allowed_vlans,
+  and wifi vap.mapped_interface MUST resolve to a defined or physical interface (fortilink is a valid port).
+- A managed_ap.wtp_profile MUST reference a defined wtp_profile name.
 - SD-WAN zone names MUST NOT equal any system zone name.
 - NEVER invent secrets, public IPs, gateways, PSKs, DNS/syslog/RADIUS targets, or serials.
   For any unknown site value, use a placeholder object: {"token": "<DESCRIPTIVE_NAME>",
   "human_prompt": "what to ask the human"} in place of the string value.
+
+PLACEHOLDER ENCODING (STRICT - read carefully):
+- A placeholder MUST be emitted as a nested JSON OBJECT, never as a JSON string.
+- The object goes directly in the field position where a value would otherwise be.
+- CORRECT (nested object):
+    "ip": {"token": "<CORP_IP_MASK>", "human_prompt": "Corp VLAN interface IP and mask"}
+- WRONG (a JSON-encoded string - DO NOT DO THIS):
+    "ip": "{ \\"token\\": \\"<CORP_IP_MASK>\\", \\"human_prompt\\": \\"...\\" }"
+  The wrong form double-encodes the object as a string and will be misread as a literal
+  value. Always emit the bare object, with no surrounding quotes and no escaping.
 """
 
 

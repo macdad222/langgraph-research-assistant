@@ -1,0 +1,41 @@
+{% if switch_vlans %}
+config system interface
+{% for v in switch_vlans %}
+    edit "{{ v.name }}"
+        set vdom "root"
+        set type vlan
+        set interface "{{ v.interface }}"
+        set vlanid {{ v.vlanid | val }}
+{% if v.ip is not none %}
+        set ip {{ v.ip | val }}
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if managed_switches %}
+config switch-controller managed-switch
+{% for sw in managed_switches %}
+    edit "{{ sw.switch_id | val }}"
+        set fortilink "{{ sw.fortilink }}"
+{% if sw.ports %}
+        config ports
+{% for p in sw.ports %}
+            edit "{{ p.port }}"
+{% if p.native_vlan %}
+                set vlan "{{ p.native_vlan }}"
+{% endif %}
+{% if p.allowed_vlans %}
+                set allowed-vlans {{ p.allowed_vlans | names }}
+{% endif %}
+{% if p.poe_status %}
+                set poe-status {{ p.poe_status }}
+{% endif %}
+            next
+{% endfor %}
+        end
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}

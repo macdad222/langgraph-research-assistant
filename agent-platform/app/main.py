@@ -2365,6 +2365,11 @@ NETWORK_DESIGN_CRITICAL_FIELDS = [
         "question": "What security zones are needed, and what traffic should be allowed or blocked between them?",
     },
     {
+        "field": "security_profiles",
+        "label": "Security profiles (UTM)",
+        "question": "What threat protection should be applied — IPS, antivirus, web and DNS filtering, application control, and SSL inspection — and on which traffic?",
+    },
+    {
         "field": "routing_sdwan",
         "label": "Routing and SD-WAN behavior",
         "question": "What routing or SD-WAN behavior should we design for, including failover, application steering, static routes, or dynamic routing?",
@@ -2375,9 +2380,24 @@ NETWORK_DESIGN_CRITICAL_FIELDS = [
         "question": "Do you need remote access or site-to-site VPN, and who or what networks should be allowed to use it?",
     },
     {
+        "field": "wireless_switching",
+        "label": "Wireless & switching",
+        "question": "Do you need managed wireless (SSIDs/FortiAP) or FortiSwitch/FortiLink switching, and if so what VLAN/SSID layout?",
+    },
+    {
+        "field": "admin_access",
+        "label": "Admin access & authentication",
+        "question": "How should administrators authenticate and be restricted — MFA, trusted-host/source restrictions, and any RADIUS/LDAP/SAML or FSSO integration?",
+    },
+    {
         "field": "operations",
         "label": "Logging, monitoring, change, and rollback",
         "question": "What logging, monitoring, change window, approval, and rollback expectations should be included?",
+    },
+    {
+        "field": "system_hardening",
+        "label": "System hardening & compliance",
+        "question": "What hardening and compliance baseline should we enforce — secure management protocols, password policy, NTP, firmware/PSIRT tracking, configuration backup, and CIS alignment?",
     },
     {
         "field": "fortigate_target",
@@ -2604,8 +2624,8 @@ async def structure_network_design_intake(
                         "critical fields whose status or summary changed because of the latest user message; previously "
                         "captured fields are preserved automatically, so do not repeat unchanged fields. structured_intake "
                         "may also include intake_updates, known_requirements, assumptions, constraints, and evidence_notes. "
-                        "critical_fields keys must come from this exact set: site_and_goal, wan, lan, security, "
-                        "routing_sdwan, remote_access, operations, fortigate_target. Each returned critical field must "
+                        "critical_fields keys must come from this exact set: site_and_goal, wan, lan, security, security_profiles, "
+                        "routing_sdwan, remote_access, wireless_switching, admin_access, operations, system_hardening, fortigate_target. Each returned critical field must "
                         "include field, label, status, summary, evidence, and question. status must be missing, partial, or "
                         "complete. intake_updates may only use NetworkDesignIntake keys: customer_name, site_name, "
                         "design_goal, business_context, constraints, preferred_fortigate_model, fortios_version. Do not "
@@ -2807,6 +2827,8 @@ async def _generate_fortigate_run(request: FortiGateDesignRequest, thread_id: st
     }
     if request.seed_standards:
         initial_state["standards"] = request.seed_standards
+    if request.fortigate_handoff:
+        initial_state["fortigate_handoff"] = request.fortigate_handoff
     invoke = app.state.fortigate_graph.ainvoke(
         initial_state,
         config=_fortigate_config(thread_id, request.mode),
@@ -2948,6 +2970,8 @@ async def _run_fortigate_interactive_job(job_id: str, request: FortiGateDesignRe
         interactive_initial_state: dict[str, Any] = {"intake": request.intake.model_dump(), "existing_config": request.existing_config}
         if request.seed_standards:
             interactive_initial_state["standards"] = request.seed_standards
+        if request.fortigate_handoff:
+            interactive_initial_state["fortigate_handoff"] = request.fortigate_handoff
         result = await app.state.interactive_fortigate_graph.ainvoke(
             interactive_initial_state,
             config=_fortigate_config(thread_id, request.mode),
@@ -3031,6 +3055,8 @@ async def fortigate_interactive(request: FortiGateDesignRequest):
         interactive_initial_state: dict[str, Any] = {"intake": request.intake.model_dump(), "existing_config": request.existing_config}
         if request.seed_standards:
             interactive_initial_state["standards"] = request.seed_standards
+        if request.fortigate_handoff:
+            interactive_initial_state["fortigate_handoff"] = request.fortigate_handoff
         result = await app.state.interactive_fortigate_graph.ainvoke(
             interactive_initial_state,
             config=_fortigate_config(thread_id, request.mode),

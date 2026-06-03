@@ -1,0 +1,115 @@
+{% if utm_profiles.antivirus %}
+config antivirus profile
+{% for av in utm_profiles.antivirus %}
+    edit "{{ av.name }}"
+{% if av.comment %}
+        set comment "{{ av.comment }}"
+{% endif %}
+{% if av.http %}
+        config http
+            set av-scan block
+        end
+{% endif %}
+{% if av.ftp %}
+        config ftp
+            set av-scan block
+        end
+{% endif %}
+{% if av.smtp %}
+        config smtp
+            set av-scan block
+        end
+{% endif %}
+{% if av.pop3 %}
+        config pop3
+            set av-scan block
+        end
+{% endif %}
+{% if av.imap %}
+        config imap
+            set av-scan block
+        end
+{% endif %}
+{% if av.outbreak_prevention %}
+        set outbreak-prevention block
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if utm_profiles.ips_sensors %}
+config ips sensor
+{% for ips in utm_profiles.ips_sensors %}
+    edit "{{ ips.name }}"
+{% if ips.comment %}
+        set comment "{{ ips.comment }}"
+{% endif %}
+        set block-malicious-url {{ 'enable' if ips.block_malicious_url else 'disable' }}
+{% if ips.extended_log %}
+        set extended-log enable
+{% endif %}
+{% if ips.entries %}
+        config entries
+{% for e in ips.entries %}
+            edit {{ e.id }}
+{% if e.severity %}
+                set severity {{ e.severity }}
+{% endif %}
+{% if e.location %}
+                set location {{ e.location }}
+{% endif %}
+{% if e.protocol %}
+                set protocol {{ e.protocol }}
+{% endif %}
+{% if e.status and e.status != '' %}
+                set status {{ e.status }}
+{% endif %}
+{% if e.action and e.action != '' %}
+                set action {{ e.action }}
+{% endif %}
+            next
+{% endfor %}
+        end
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if utm_profiles.webfilter %}
+config webfilter profile
+{% for wf in utm_profiles.webfilter %}
+    edit "{{ wf.name }}"
+{% if wf.comment %}
+        set comment "{{ wf.comment }}"
+{% endif %}
+        set inspection-mode {{ wf.inspection_mode }}
+{% if wf.fortiguard_categories %}
+        config ftgd-wf
+            config filters
+{% for c in wf.fortiguard_categories %}
+                edit {{ loop.index }}
+                    set category {{ c.category_id | val }}
+                    set action {{ c.action }}
+                next
+{% endfor %}
+            end
+        end
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if utm_profiles.ssl_ssh %}
+config firewall ssl-ssh-profile
+{% for s in utm_profiles.ssl_ssh %}
+    edit "{{ s.name }}"
+{% if s.comment %}
+        set comment "{{ s.comment }}"
+{% endif %}
+        config ssl
+            set inspect-all {{ s.inspect_all }}
+        end
+    next
+{% endfor %}
+end
+{% endif %}

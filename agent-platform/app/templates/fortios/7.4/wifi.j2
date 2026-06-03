@@ -1,0 +1,80 @@
+{% if wifi.wtp_profiles %}
+config wireless-controller wtp-profile
+{% for wp in wifi.wtp_profiles %}
+    edit "{{ wp.name }}"
+{% if wp.comment %}
+        set comment "{{ wp.comment }}"
+{% endif %}
+{% if wp.platform_type | val %}
+        config platform
+            set type {{ wp.platform_type | val }}
+        end
+{% endif %}
+{% if wp.country %}
+        set country {{ wp.country }}
+{% endif %}
+{% if wp.vaps %}
+        config radio-1
+            set mode ap
+            set vap-all manual
+            set vaps {{ wp.vaps | names }}
+        end
+        config radio-2
+            set mode ap
+            set vap-all manual
+            set vaps {{ wp.vaps | names }}
+        end
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if wifi.vaps %}
+config wireless-controller vap
+{% for v in wifi.vaps %}
+    edit "{{ v.name }}"
+        set ssid "{{ v.ssid | val }}"
+{% if v.security %}
+        set security {{ v.security }}
+{% endif %}
+{% if v.auth and v.auth != '' %}
+        set auth {{ v.auth }}
+{% endif %}
+{% if v.passphrase is not none %}
+        set passphrase {{ v.passphrase | val }}
+{% endif %}
+{% if v.radius_server is not none %}
+        set radius-server {{ v.radius_server | val }}
+{% endif %}
+{% if v.local_bridging %}
+        set local-bridging enable
+{% endif %}
+{% if v.vlanid is not none %}
+        set vlanid {{ v.vlanid | val }}
+{% endif %}
+{% if v.guest_isolation %}
+        set ldpc disable
+        set broadcast-ssid enable
+        set client-isolation enable
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}
+{% if wifi.managed_aps %}
+config wireless-controller wtp
+{% for ap in wifi.managed_aps %}
+    edit "{{ ap.serial | val }}"
+{% if ap.name %}
+        set name "{{ ap.name }}"
+{% endif %}
+{% if ap.wtp_profile %}
+        set wtp-profile "{{ ap.wtp_profile }}"
+{% endif %}
+{% if ap.comment %}
+        set comment "{{ ap.comment }}"
+{% endif %}
+    next
+{% endfor %}
+end
+{% endif %}

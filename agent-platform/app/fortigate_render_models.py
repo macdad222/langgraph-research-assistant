@@ -12,6 +12,7 @@ isolation (no langchain/redis/app graph dependencies).
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal, Optional, Union
 
@@ -82,6 +83,83 @@ def substitute_placeholder_dicts(node: Any, values: dict[str, Any]) -> Any:
     if isinstance(node, list):
         return [substitute_placeholder_dicts(item, values) for item in node]
     return node
+
+
+def _parse_token_object(text: str) -> Optional[dict[str, Any]]:
+    """If ``text`` is a JSON-encoded ``{"token": ..., "human_prompt": ...}`` object,
+    return it as a normalized placeholder dict; otherwise return None.
+
+    Some models (when JSON discipline slips) serialize a Placeholder as a STRING
+    containing JSON instead of as a nested object. This tolerantly detects that one
+    case and leaves every ordinary string untouched. Uses ``raw_decode`` so trailing
+    junk after a valid object does not defeat detection."""
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    # Cheap guard: only attempt a parse when the string plausibly encodes a token object.
+    if "token" not in stripped or "{" not in stripped:
+        return None
+    start = stripped.find("{")
+    candidate = stripped[start:]
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict) or "token" not in obj:
+        return None
+    token = obj.get("token")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    human_prompt = obj.get("human_prompt", "")
+    return {"token": token, "human_prompt": str(human_prompt or "")}
+
+
+def _coerce_placeholder_strings(node: Any) -> Any:
+    """Recursively walk a raw config dict/list, converting any string that is actually
+    a JSON-encoded token object into a proper Placeholder dict shape. Idempotent:
+    already-correct dicts/lists are walked but their non-token strings are left intact."""
+    if isinstance(node, dict):
+        return {k: _coerce_placeholder_strings(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_coerce_placeholder_strings(item) for item in node]
+    if isinstance(node, str):
+        parsed = _parse_token_object(node)
+        if parsed is not None:
+            return parsed
+        return node
+    return node
+
+
+# --- inline-IP promotion helpers (P1b) ------------------------------------------------
+
+_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_CIDR_RE = re.compile(r"^((?:\d{1,3}\.){3}\d{1,3})/(\d{1,2})$")
+_NETMASK_OCTETS = {"0", "128", "192", "224", "240", "248", "252", "254", "255"}
+
+
+def _is_ipv4(token: str) -> bool:
+    if not _IPV4_RE.match(token):
+        return False
+    return all(0 <= int(o) <= 255 for o in token.split("."))
+
+
+def _is_netmask(token: str) -> bool:
+    if not _is_ipv4(token):
+        return False
+    return all(o in _NETMASK_OCTETS for o in token.split("."))
+
+
+def _cidr_to_mask(bits: int) -> str:
+    bits = max(0, min(32, int(bits)))
+    mask = (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF if bits else 0
+    return ".".join(str((mask >> (8 * shift)) & 0xFF) for shift in (3, 2, 1, 0))
+
+
+def _generated_address_name(ip: str, mask: str) -> str:
+    name = "addr_" + ip.replace(".", "-")
+    if mask != "255.255.255.255":
+        name += "_" + mask.replace(".", "-")
+    return name
 
 
 # --- reference helpers ----------------------------------------------------------------
@@ -166,8 +244,8 @@ class AddressGroupModel(BaseModel):
 class ServiceObjectModel(BaseModel):
     name: str = Field(..., min_length=1)
     protocol: Literal["TCP", "UDP", "SCTP", "ICMP", "IP"] = "TCP"
-    tcp_portrange: str = ""
-    udp_portrange: str = ""
+    tcp_portrange: Value = ""
+    udp_portrange: Value = ""
     comment: str = ""
 
 
@@ -183,8 +261,8 @@ class VipModel(BaseModel):
     extintf: str = "any"
     portforward: bool = False
     protocol: Literal["tcp", "udp", "sctp", "icmp"] = "tcp"
-    extport: str = ""
-    mappedport: str = ""
+    extport: Value = ""
+    mappedport: Value = ""
 
 
 class SdwanZoneModel(BaseModel):
@@ -356,13 +434,210 @@ class VpnModel(BaseModel):
     ssl_settings: Optional[SslVpnSettingsModel] = None
 
 
+# --- system hardening models (domain 1) ----------------------------------------------
+
+
+class NtpModel(BaseModel):
+    servers: list[Value] = Field(default_factory=list)  # NTP server IPs/FQDNs (placeholders ok)
+    type: Literal["fortiguard", "custom"] = "custom"
+    sync_interval: int = 60
+
+
+class PasswordPolicyModel(BaseModel):
+    status: bool = True
+    minimum_length: int = 14
+    min_lower_case_letter: int = 1
+    min_upper_case_letter: int = 1
+    min_number: int = 1
+    min_non_alphanumeric: int = 1
+    expire_days: Optional[int] = None
+    reuse_password: Literal["enable", "disable"] = "disable"
+
+
+class SystemHardeningModel(BaseModel):
+    """Hardening knobs rendered into a SEPARATE `config system global` block (keys kept
+    disjoint from system.j2, which owns only `hostname`) plus optional `config system ntp`
+    and `config system password-policy` blocks."""
+
+    admin_https_redirect: bool = True
+    admin_ssh_v1: bool = False
+    admintimeout: int = 5
+    strong_crypto: bool = True
+    admin_https_ssl_versions: str = "tlsv1-2 tlsv1-3"
+    pre_login_banner: bool = False
+    timezone: Value = ""
+    ntp: Optional[NtpModel] = None
+    password_policy: Optional[PasswordPolicyModel] = None
+
+
+# --- admin access models (domain 2) ---------------------------------------------------
+
+
+class AdminUserModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    accprofile: str = "super_admin"
+    trusted_hosts: list[Value] = Field(default_factory=list)  # "ip mask"; placeholders ok
+    two_factor: Literal["disable", "fortitoken", "email", "sms"] = "disable"
+    two_factor_email: Optional[Value] = None
+    password: Optional[Value] = None  # almost always a Placeholder
+    comments: str = ""
+
+
+class AdminAccessModel(BaseModel):
+    admins: list[AdminUserModel] = Field(default_factory=list)
+
+
+# --- UTM profile definition models (domain 3) ----------------------------------------
+
+
+class AntivirusProfileModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    comment: str = ""
+    http: bool = True
+    ftp: bool = True
+    smtp: bool = True
+    pop3: bool = True
+    imap: bool = True
+    outbreak_prevention: bool = False
+
+
+class IpsSensorEntryModel(BaseModel):
+    id: int = Field(default=1, ge=1)
+    severity: str = ""  # e.g. "medium high critical"
+    location: str = ""  # e.g. "server client"
+    protocol: str = ""
+    status: Literal["enable", "disable", "default", ""] = "default"
+    action: Literal["pass", "block", "reset", "default", ""] = "default"
+
+
+class IpsSensorModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    comment: str = ""
+    block_malicious_url: bool = True
+    extended_log: bool = False
+    entries: list[IpsSensorEntryModel] = Field(default_factory=list)
+
+
+class WebfilterCategoryActionModel(BaseModel):
+    """A single FortiGuard category-action override inside a webfilter profile (helper
+    sub-model; not in the original spec list but required to render `config ftgd-wf`)."""
+
+    category_id: Union[int, Placeholder]
+    action: Literal["allow", "monitor", "block", "warning", "authenticate"] = "block"
+
+
+class WebfilterProfileModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    comment: str = ""
+    inspection_mode: Literal["proxy", "flow"] = "flow"
+    fortiguard_categories: list[WebfilterCategoryActionModel] = Field(default_factory=list)
+
+
+class SslSshProfileModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    comment: str = ""
+    # certificate-inspection = SNI only; deep-inspection = full MITM.
+    inspect_all: Literal["disable", "certificate-inspection", "deep-inspection"] = "certificate-inspection"
+
+
+class UtmProfilesModel(BaseModel):
+    antivirus: list[AntivirusProfileModel] = Field(default_factory=list)
+    ips_sensors: list[IpsSensorModel] = Field(default_factory=list)
+    webfilter: list[WebfilterProfileModel] = Field(default_factory=list)
+    ssl_ssh: list[SslSshProfileModel] = Field(default_factory=list)
+
+
+# --- FortiSwitch models (domain 4) ----------------------------------------------------
+
+
+class ManagedSwitchPortModel(BaseModel):
+    port: str = Field(..., min_length=1)
+    native_vlan: Optional[str] = None
+    allowed_vlans: list[str] = Field(default_factory=list)
+    poe_status: Literal["enable", "disable", ""] = ""
+
+
+class ManagedSwitchModel(BaseModel):
+    switch_id: Value  # FortiSwitch serial; usually a Placeholder
+    fortilink: str = "fortilink"
+    ports: list[ManagedSwitchPortModel] = Field(default_factory=list)
+
+
+class SwitchVlanModel(BaseModel):
+    """A `config system interface` VLAN of type vlan over the FortiLink interface. These
+    are interface-like, so their names are registered into declared_ifaces."""
+
+    name: str = Field(..., min_length=1)
+    vlanid: Union[int, Placeholder]
+    interface: str = "fortilink"
+    ip: Optional[Value] = None
+
+
+# --- WiFi / wireless-controller models (domain 5) -------------------------------------
+
+
+class WtpProfileModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    comment: str = ""
+    platform_type: Value = ""  # e.g. "FAP231F" (placeholder ok)
+    country: str = ""
+    vaps: list[str] = Field(default_factory=list)  # VAP names broadcast by this profile's radios
+
+
+class WirelessVapModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    ssid: Value = ""
+    # FortiOS security values, e.g. wpa2-only-personal, wpa2-only-enterprise, wpa3-only-personal, open.
+    security: str = "wpa2-only-personal"
+    passphrase: Optional[Value] = None  # PSK; Placeholder for unknown
+    auth: Literal["psk", "radius", "usergroup", ""] = ""
+    radius_server: Optional[Value] = None  # Placeholder for unknown RADIUS target
+    vlanid: Optional[Union[int, Placeholder]] = None
+    local_bridging: bool = False
+    mapped_interface: Optional[str] = None  # bridge-target VLAN interface (must be declared)
+    guest_isolation: bool = False
+
+
+class ManagedApModel(BaseModel):
+    name: str = Field(..., min_length=1)
+    serial: Value = ""  # FortiAP serial; Placeholder for unknown
+    wtp_profile: str = ""
+    comment: str = ""
+
+
+class WirelessControllerModel(BaseModel):
+    vaps: list[WirelessVapModel] = Field(default_factory=list)
+    wtp_profiles: list[WtpProfileModel] = Field(default_factory=list)
+    managed_aps: list[ManagedApModel] = Field(default_factory=list)
+
+
+# Known built-in / referenceable UTM profile names that a policy may reference without a
+# local definition (used by the SOFT, warn-only UTM check).
+BUILTIN_UTM_PROFILES = {
+    "default",
+    "g-default",
+    "wifi-default",
+    "certificate-inspection",
+    "deep-inspection",
+    "no-inspection",
+    "g-certificate-inspection",
+    "flow",
+    "sniffer-profile",
+}
+
+
 # --- top-level model ------------------------------------------------------------------
 
 
 class FortiGateConfigModel(BaseModel):
     fortios_version: str = "7.4"
     hostname: Value = ""
+    system_hardening: Optional[SystemHardeningModel] = None
+    admin_access: Optional[AdminAccessModel] = None
     interfaces: list[InterfaceModel] = Field(default_factory=list)
+    managed_switches: list[ManagedSwitchModel] = Field(default_factory=list)
+    switch_vlans: list[SwitchVlanModel] = Field(default_factory=list)
+    wifi: Optional[WirelessControllerModel] = None
     zones: list[ZoneModel] = Field(default_factory=list)
     dhcp_servers: list[DhcpServerModel] = Field(default_factory=list)
     address_objects: list[AddressObjectModel] = Field(default_factory=list)
@@ -373,6 +648,7 @@ class FortiGateConfigModel(BaseModel):
     sdwan: Optional[SdwanModel] = None
     static_routes: list[StaticRouteModel] = Field(default_factory=list)
     vpn: Optional[VpnModel] = None
+    utm_profiles: Optional[UtmProfilesModel] = None
     firewall_policies: list[FirewallPolicyModel] = Field(default_factory=list)
     logging: Optional[LoggingModel] = None
     # Escape hatch: stanzas not yet modelled. Anything here is flagged
@@ -381,14 +657,96 @@ class FortiGateConfigModel(BaseModel):
     # Non-token human follow-ups that are not placeholders (e.g. "confirm switch serials").
     extra_human_input: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_stringified_placeholders(cls, data: Any) -> Any:
+        """Some models intermittently serialize placeholders as JSON-encoded STRINGS
+        (e.g. ``"ip": "{\\"token\\": \\"<CORP_IP_MASK>\\", ...}"``) instead of nested
+        objects. Because ``Value`` accepts ``str``, those would silently validate as
+        plain strings and never be detected as placeholders. Recursively convert any
+        such string into a proper Placeholder dict BEFORE field validation runs, so the
+        pipeline is tolerant of any model's JSON discipline."""
+        if isinstance(data, dict):
+            return _coerce_placeholder_strings(data)
+        return data
+
+    def _promote_inline_ip_group_members(self) -> None:
+        """Normalize address-group members that are literal IPs/subnets into real
+        firewall address objects (P1b). When a user fills a placeholder like
+        ``<MGMT_HOSTS>`` with literal IP(s) (e.g. ``"10.10.10.50 10.10.10.51"``), the
+        group would otherwise reference undefined addresses. Auto-generate AddressModel
+        objects and rewrite the members to reference them by name. Genuinely undefined
+        NON-IP members are left untouched so the strict referential check still flags
+        them."""
+        existing_names = (
+            {a.name for a in self.address_objects}
+            | {g.name for g in self.address_groups}
+            | {v.name for v in self.vips}
+        )
+        generated: dict[str, AddressObjectModel] = {}
+
+        def ensure_address(ip: str, mask: str) -> str:
+            name = _generated_address_name(ip, mask)
+            if name not in existing_names and name not in generated:
+                generated[name] = AddressObjectModel(name=name, type="ipmask", subnet=f"{ip} {mask}")
+            return name
+
+        for grp in self.address_groups:
+            new_members: list[Value] = []
+            for member in grp.members:
+                if isinstance(member, Placeholder):
+                    new_members.append(member)
+                    continue
+                text = str(member).strip()
+                if not text or text in existing_names or text in ADDRESS_SPECIAL:
+                    new_members.append(member)
+                    continue
+                parts = text.split()
+                # A single "ip mask" subnet (e.g. "10.0.0.0 255.255.255.0") is ONE member.
+                if len(parts) == 2 and _is_ipv4(parts[0]) and _is_netmask(parts[1]):
+                    new_members.append(ensure_address(parts[0], parts[1]))
+                    continue
+                # Otherwise treat each whitespace-separated token as its own host/subnet.
+                converted: list[tuple[str, str]] = []
+                all_ip = True
+                for part in parts:
+                    cidr = _CIDR_RE.match(part)
+                    if _is_ipv4(part):
+                        converted.append((part, "255.255.255.255"))
+                    elif cidr and _is_ipv4(cidr.group(1)):
+                        converted.append((cidr.group(1), _cidr_to_mask(int(cidr.group(2)))))
+                    else:
+                        all_ip = False
+                        break
+                if all_ip and converted:
+                    for ip, mask in converted:
+                        new_members.append(ensure_address(ip, mask))
+                else:
+                    # Not a literal IP/subnet -> keep as-is; referential check decides.
+                    new_members.append(member)
+            grp.members = new_members
+
+        if generated:
+            self.address_objects = list(self.address_objects) + list(generated.values())
+
     @model_validator(mode="after")
     def _check_referential_integrity(self) -> "FortiGateConfigModel":
         errors: list[str] = []
+
+        # P1b: promote literal IP/subnet address-group members to real address objects
+        # BEFORE the strict reference check so those references resolve.
+        self._promote_inline_ip_group_members()
 
         declared_ifaces = {i.name for i in self.interfaces}
         # IPsec phase1-interface entries create virtual interfaces policies/routes can use.
         if self.vpn:
             declared_ifaces |= {p.name for p in self.vpn.ipsec_phase1}
+        # FortiSwitch VLANs (config system interface, type vlan over fortilink) and wifi VAPs
+        # are interface-like: zones/dhcp/policies may legitimately reference them by name, so
+        # register them here or those references would hard-fail and fall back.
+        declared_ifaces |= {v.name for v in self.switch_vlans}
+        if self.wifi:
+            declared_ifaces |= {v.name for v in self.wifi.vaps}
         zone_names = {z.name for z in self.zones}
         addr_names = (
             {a.name for a in self.address_objects}
@@ -493,6 +851,11 @@ class FortiGateConfigModel(BaseModel):
                     errors.append(
                         f"sd-wan service '{svc.name}': health_check '{svc.health_check}' is not defined"
                     )
+                for sla_ref in svc.sla:
+                    if sla_ref.health_check and sla_ref.health_check not in health_check_names:
+                        errors.append(
+                            f"sd-wan service '{svc.name}': sla health_check '{sla_ref.health_check}' is not defined"
+                        )
                 for seq in svc.priority_members:
                     if seq not in member_seqs:
                         errors.append(
@@ -554,8 +917,115 @@ class FortiGateConfigModel(BaseModel):
                 ):
                     errors.append(f"ssl settings: default-portal '{ssl.default_portal}' is not a defined portal")
 
+        # fortiswitch: fortilink + switch-vlan + port vlan references must resolve.
+        for sw in self.managed_switches:
+            if not _is_interface_ref(sw.fortilink, declared_ifaces):
+                errors.append(
+                    f"managed switch '{render_value(sw.switch_id)}': fortilink '{sw.fortilink}' is not a defined interface"
+                )
+            for p in sw.ports:
+                if p.native_vlan and not _is_interface_ref(p.native_vlan, declared_ifaces):
+                    errors.append(
+                        f"managed switch port '{p.port}': native_vlan '{p.native_vlan}' is not a defined interface"
+                    )
+                for vlan in p.allowed_vlans:
+                    if not _is_interface_ref(vlan, declared_ifaces):
+                        errors.append(
+                            f"managed switch port '{p.port}': allowed vlan '{vlan}' is not a defined interface"
+                        )
+        for v in self.switch_vlans:
+            if not _is_interface_ref(v.interface, declared_ifaces):
+                errors.append(f"switch vlan '{v.name}': interface '{v.interface}' is not a defined interface")
+
+        # wifi: VAP mapped_interface + managed-ap wtp_profile references must resolve.
+        if self.wifi:
+            wtp_names = {p.name for p in self.wifi.wtp_profiles}
+            for v in self.wifi.vaps:
+                if v.mapped_interface and not _is_interface_ref(v.mapped_interface, declared_ifaces):
+                    errors.append(
+                        f"wifi vap '{v.name}': mapped_interface '{v.mapped_interface}' is not a defined interface"
+                    )
+                if v.vlanid is not None and v.local_bridging and not v.mapped_interface:
+                    errors.append(
+                        f"wifi vap '{v.name}': local_bridging with a vlanid requires a mapped_interface (bridge target)"
+                    )
+            for ap in self.wifi.managed_aps:
+                if ap.wtp_profile and ap.wtp_profile not in wtp_names:
+                    errors.append(
+                        f"managed ap '{ap.name}': wtp_profile '{ap.wtp_profile}' is not a defined wtp-profile"
+                    )
+
         if errors:
             raise ValueError("FortiGate config referential integrity failed:\n- " + "\n- ".join(errors))
+        return self
+
+    @model_validator(mode="after")
+    def _soft_utm_profiles(self) -> "FortiGateConfigModel":
+        """SOFT (warn-only) UTM handling - NEVER raises:
+
+        1. Best-effort auto-attach: for `accept` policies egressing to WAN/SD-WAN whose
+           profile fields are empty, fill them from a DEFINED default profile if one exists.
+           If no default profile is defined, leave the field empty (never invent / fail).
+        2. Collect references to undefined, non-built-in UTM profiles into extra_human_input
+           as human follow-ups (routed to review, never a hard fail). Idempotent (dedup)."""
+        defined_av = {p.name for p in self.utm_profiles.antivirus} if self.utm_profiles else set()
+        defined_ips = {p.name for p in self.utm_profiles.ips_sensors} if self.utm_profiles else set()
+        defined_web = {p.name for p in self.utm_profiles.webfilter} if self.utm_profiles else set()
+        defined_ssl = {p.name for p in self.utm_profiles.ssl_ssh} if self.utm_profiles else set()
+
+        def _pick_default(names: set[str], preferred: str) -> str:
+            if preferred in names:
+                return preferred
+            return next(iter(sorted(names)), "")
+
+        # WAN-egress refs: role==wan interfaces, sd-wan zone names, and physical wanN ports.
+        wan_egress = {i.name for i in self.interfaces if i.role == "wan"}
+        if self.sdwan:
+            wan_egress |= {z.name for z in self.sdwan.zones}
+
+        def _egresses_wan(pol: "FirewallPolicyModel") -> bool:
+            for d in pol.dstintf:
+                if d in wan_egress:
+                    return True
+                if PHYSICAL_PORT_RE.match(d) and d.lower().startswith("wan"):
+                    return True
+            return False
+
+        av_default = _pick_default(defined_av, "av-default")
+        ips_default = _pick_default(defined_ips, "ips-default")
+        web_default = _pick_default(defined_web, "web-default")
+        # The built-in certificate-inspection profile always exists on the device.
+        ssl_default = _pick_default(defined_ssl, "certificate-inspection") or "certificate-inspection"
+
+        for pol in self.firewall_policies:
+            if pol.action != "accept" or not _egresses_wan(pol):
+                continue
+            if not pol.av_profile and av_default:
+                pol.av_profile = av_default
+            if not pol.ips_sensor and ips_default:
+                pol.ips_sensor = ips_default
+            if not pol.webfilter_profile and web_default:
+                pol.webfilter_profile = web_default
+            if not pol.ssl_ssh_profile and (pol.av_profile or pol.ips_sensor or pol.webfilter_profile):
+                pol.ssl_ssh_profile = ssl_default
+
+        warnings: list[str] = []
+        for pol in self.firewall_policies:
+            for field, defined in (
+                ("av_profile", defined_av),
+                ("ips_sensor", defined_ips),
+                ("webfilter_profile", defined_web),
+                ("ssl_ssh_profile", defined_ssl),
+            ):
+                ref = getattr(pol, field)
+                if ref and ref not in defined and ref not in BUILTIN_UTM_PROFILES:
+                    warnings.append(
+                        f"policy '{pol.name}': {field} '{ref}' is not a defined UTM profile or known "
+                        "built-in; define it or confirm it exists on the device"
+                    )
+        for w in warnings:
+            if w not in self.extra_human_input:
+                self.extra_human_input.append(w)
         return self
 
     def human_input_items(self, rendered_cli: str = "") -> list[str]:

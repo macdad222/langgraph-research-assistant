@@ -10,10 +10,10 @@ config firewall vip
         set portforward enable
         set protocol {{ v.protocol }}
 {% if v.extport %}
-        set extport {{ v.extport }}
+        set extport {{ v.extport | val }}
 {% endif %}
 {% if v.mappedport %}
-        set mappedport {{ v.mappedport }}
+        set mappedport {{ v.mappedport | val }}
 {% endif %}
 {% endif %}
     next

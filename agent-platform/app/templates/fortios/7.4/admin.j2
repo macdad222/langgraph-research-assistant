@@ -1,0 +1,22 @@
+config system admin
+{% for a in admin_access.admins %}
+    edit "{{ a.name }}"
+        set accprofile "{{ a.accprofile }}"
+{% if a.password is not none %}
+        set password {{ a.password | val }}
+{% endif %}
+{% for th in a.trusted_hosts %}
+        set trusthost{{ loop.index }} {{ th | val }}
+{% endfor %}
+{% if a.two_factor and a.two_factor != 'disable' %}
+        set two-factor {{ a.two_factor }}
+{% if a.two_factor == 'email' and a.two_factor_email is not none %}
+        set email-to {{ a.two_factor_email | val }}
+{% endif %}
+{% endif %}
+{% if a.comments %}
+        set comments "{{ a.comments }}"
+{% endif %}
+    next
+{% endfor %}
+end

@@ -66,6 +66,10 @@ class FortiGateDesignRequest(BaseModel):
     # Standards already retrieved upstream (e.g. by the Network Design handoff). When provided,
     # the FortiGate graph reuses them instead of retrieving a third time.
     seed_standards: list[dict[str, Any]] = Field(default_factory=list)
+    # Structured FortiGate handoff payload from the Network Design step. Additive/optional; when
+    # provided it seeds the FortiGate graph fortigate_handoff state so build_config_model sees the
+    # structured *_requirements topics. Backward compatible (defaults to empty -> {} state).
+    fortigate_handoff: dict[str, Any] = Field(default_factory=dict)
 
 
 class FortiGateInputReviewItem(BaseModel):
