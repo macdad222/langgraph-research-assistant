@@ -1392,11 +1392,15 @@ async def lifespan(app: FastAPI):
         temperature=network_intake_temperature,
         max_tokens=network_intake_max_output_tokens,
     )
+    network_package_extra_body = {
+        "metadata": {"agentic_gateway_openclaw_passthrough": True},
+    }
     network_package_model = make_chat_model(
         model_name=network_package_model_name,
         base_url=base_url,
         api_key=api_key,
         temperature=network_package_temperature,
+        extra_body=network_package_extra_body,
         max_tokens=network_package_max_output_tokens,
     )
     network_handoff_model = make_chat_model(

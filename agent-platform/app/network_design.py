@@ -65,6 +65,13 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
     start = stripped.find("{")
+    if start != -1:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(stripped[start:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
     end = stripped.rfind("}")
     if start == -1 or end <= start:
         return {}
