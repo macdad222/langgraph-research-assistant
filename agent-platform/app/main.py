@@ -797,17 +797,21 @@ def load_fortigate_design_job(job_id: str) -> FortiGateDesignJobResponse:
 def update_fortigate_design_job(
     job_id: str,
     *,
-    status: str,
+    status: str | None = None,
     run_id: str | None = None,
     error: str = "",
+    current_stage: str | None = None,
 ) -> FortiGateDesignJobResponse:
     job = load_fortigate_design_job(job_id)
-    job.status = status
+    if status is not None:
+        job.status = status
     job.updated_at = _utc_now()
     if run_id is not None:
         job.run_id = run_id
     if error:
         job.error = error
+    if current_stage is not None:
+        job.current_stage = current_stage
     save_fortigate_design_job(job)
     return job
 
@@ -828,17 +832,21 @@ def load_fortigate_interactive_job(job_id: str) -> FortiGateInteractiveJobRespon
 def update_fortigate_interactive_job(
     job_id: str,
     *,
-    status: str,
+    status: str | None = None,
     response: FortiGateInteractiveResponse | None = None,
     error: str = "",
+    current_stage: str | None = None,
 ) -> FortiGateInteractiveJobResponse:
     job = load_fortigate_interactive_job(job_id)
-    job.status = status
+    if status is not None:
+        job.status = status
     job.updated_at = _utc_now()
     if response is not None:
         job.response = response
     if error:
         job.error = error
+    if current_stage is not None:
+        job.current_stage = current_stage
     save_fortigate_interactive_job(job)
     return job
 
@@ -1203,17 +1211,21 @@ def load_network_design_job(job_id: str) -> NetworkDesignJobResponse:
 def update_network_design_job(
     job_id: str,
     *,
-    status: str,
+    status: str | None = None,
     run_id: str | None = None,
     error: str = "",
+    current_stage: str | None = None,
 ) -> NetworkDesignJobResponse:
     job = load_network_design_job(job_id)
-    job.status = status
+    if status is not None:
+        job.status = status
     job.updated_at = _utc_now()
     if run_id is not None:
         job.run_id = run_id
     if error:
         job.error = error
+    if current_stage is not None:
+        job.current_stage = current_stage
     save_network_design_job(job)
     return job
 
@@ -2747,23 +2759,83 @@ async def _generate_network_design_run(request: NetworkDesignRequest, thread_id:
     return response
 
 
+@asynccontextmanager
+async def _maybe_semaphore(semaphore: Optional[asyncio.Semaphore]):
+    """Acquire the semaphore if present, otherwise act as a no-op context."""
+    if semaphore is None:
+        yield
+    else:
+        async with semaphore:
+            yield
+
+
+async def _poll_job_stage(graph: Any, config: dict[str, Any], update_job: Any, job_id: str) -> None:
+    """Best-effort background task: mirror the running graph's current node into the
+    job's ``current_stage`` so the UI can show a friendly intent label (e.g.
+    "Retrieving standards…") instead of a raw job id while the run is in progress."""
+    last_stage = ""
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            snapshot = await graph.aget_state(config)
+            stage = ""
+            nxt = getattr(snapshot, "next", None)
+            if nxt:
+                stage = str(nxt[0])
+            else:
+                trace = (getattr(snapshot, "values", None) or {}).get("execution_trace") or []
+                if trace:
+                    stage = str(trace[-1].get("node", ""))
+            if stage and stage != last_stage:
+                last_stage = stage
+                try:
+                    update_job(job_id, current_stage=stage)
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Progress reporting is best-effort and must never break the run.
+            continue
+
+
+async def _stop_stage_poller(poller: Optional[asyncio.Task]) -> None:
+    if poller is None:
+        return
+    poller.cancel()
+    try:
+        await poller
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 async def _run_network_design_job(job_id: str, design_request: NetworkDesignRequest, thread_id: str) -> None:
     semaphore = getattr(app.state, "network_design_job_semaphore", None)
+    poller: Optional[asyncio.Task] = None
     try:
-        if semaphore is None:
+        async with _maybe_semaphore(semaphore):
             update_network_design_job(job_id, status="running")
+            poller = asyncio.create_task(
+                _poll_job_stage(
+                    app.state.network_design_graph,
+                    _network_design_config(thread_id),
+                    update_network_design_job,
+                    job_id,
+                )
+            )
             response = await _generate_network_design_run(design_request, thread_id)
-        else:
-            async with semaphore:
-                update_network_design_job(job_id, status="running")
-                response = await _generate_network_design_run(design_request, thread_id)
-        update_network_design_job(job_id, status="completed", run_id=response.run_id)
+        await _stop_stage_poller(poller)
+        poller = None
+        update_network_design_job(job_id, status="completed", run_id=response.run_id, current_stage="finalize_package")
     except asyncio.CancelledError:
+        await _stop_stage_poller(poller)
         update_network_design_job(job_id, status="cancelled", error="Job cancelled before completion.")
         raise
     except HTTPException as exc:
+        await _stop_stage_poller(poller)
         update_network_design_job(job_id, status="failed", error=str(exc.detail))
     except Exception as exc:
+        await _stop_stage_poller(poller)
         update_network_design_job(job_id, status="failed", error=str(exc))
 
 
@@ -2864,21 +2936,31 @@ async def _run_with_client_disconnect_cancel(task_coro: Any, request: Request) -
 
 async def _run_fortigate_design_job(job_id: str, design_request: FortiGateDesignRequest, thread_id: str) -> None:
     semaphore = getattr(app.state, "fortigate_design_job_semaphore", None)
+    poller: Optional[asyncio.Task] = None
     try:
-        if semaphore is None:
+        async with _maybe_semaphore(semaphore):
             update_fortigate_design_job(job_id, status="running")
+            poller = asyncio.create_task(
+                _poll_job_stage(
+                    app.state.fortigate_graph,
+                    _fortigate_config(thread_id),
+                    update_fortigate_design_job,
+                    job_id,
+                )
+            )
             response = await _generate_fortigate_run(design_request, thread_id)
-        else:
-            async with semaphore:
-                update_fortigate_design_job(job_id, status="running")
-                response = await _generate_fortigate_run(design_request, thread_id)
-        update_fortigate_design_job(job_id, status="completed", run_id=response.run_id)
+        await _stop_stage_poller(poller)
+        poller = None
+        update_fortigate_design_job(job_id, status="completed", run_id=response.run_id, current_stage="finalize_package")
     except asyncio.CancelledError:
+        await _stop_stage_poller(poller)
         update_fortigate_design_job(job_id, status="cancelled", error="Job cancelled before completion.")
         raise
     except HTTPException as exc:
+        await _stop_stage_poller(poller)
         update_fortigate_design_job(job_id, status="failed", error=str(exc.detail))
     except Exception as exc:
+        await _stop_stage_poller(poller)
         update_fortigate_design_job(job_id, status="failed", error=str(exc))
 
 
@@ -2965,8 +3047,17 @@ def _fortigate_interactive_response_from_result(result: dict[str, Any], thread_i
 
 async def _run_fortigate_interactive_job(job_id: str, request: FortiGateDesignRequest, thread_id: str) -> None:
     checkpoint_thread_id = f"fortigate:{thread_id}"
+    poller: Optional[asyncio.Task] = None
     try:
         update_fortigate_interactive_job(job_id, status="running")
+        poller = asyncio.create_task(
+            _poll_job_stage(
+                app.state.interactive_fortigate_graph,
+                _fortigate_config(thread_id, request.mode),
+                update_fortigate_interactive_job,
+                job_id,
+            )
+        )
         interactive_initial_state: dict[str, Any] = {"intake": request.intake.model_dump(), "existing_config": request.existing_config}
         if request.seed_standards:
             interactive_initial_state["standards"] = request.seed_standards
@@ -2978,28 +3069,45 @@ async def _run_fortigate_interactive_job(job_id: str, request: FortiGateDesignRe
         )
         if app.state.langfuse is not None:
             app.state.langfuse.flush()
+        await _stop_stage_poller(poller)
+        poller = None
         response = _fortigate_interactive_response_from_result(result, thread_id, checkpoint_thread_id)
         update_fortigate_interactive_job(job_id, status=response.status, response=response)
     except asyncio.CancelledError:
+        await _stop_stage_poller(poller)
         update_fortigate_interactive_job(job_id, status="cancelled", error="Job cancelled before completion.")
         raise
     except Exception as exc:
+        await _stop_stage_poller(poller)
         update_fortigate_interactive_job(job_id, status="failed", error=str(exc))
 
 
 async def _run_fortigate_interactive_resume_job(job_id: str, thread_id: str, payload: dict[str, Any]) -> None:
     checkpoint_thread_id = f"fortigate:{thread_id}"
+    poller: Optional[asyncio.Task] = None
     try:
         update_fortigate_interactive_job(job_id, status="running")
+        poller = asyncio.create_task(
+            _poll_job_stage(
+                app.state.interactive_fortigate_graph,
+                _fortigate_config(thread_id, "interactive"),
+                update_fortigate_interactive_job,
+                job_id,
+            )
+        )
         result = await app.state.interactive_fortigate_graph.ainvoke(Command(resume=payload), config=_fortigate_config(thread_id, "interactive"))
         if app.state.langfuse is not None:
             app.state.langfuse.flush()
+        await _stop_stage_poller(poller)
+        poller = None
         response = _fortigate_interactive_response_from_result(result, thread_id, checkpoint_thread_id)
         update_fortigate_interactive_job(job_id, status=response.status, response=response)
     except asyncio.CancelledError:
+        await _stop_stage_poller(poller)
         update_fortigate_interactive_job(job_id, status="cancelled", error="Job cancelled before completion.")
         raise
     except Exception as exc:
+        await _stop_stage_poller(poller)
         update_fortigate_interactive_job(job_id, status="failed", error=str(exc))
 
 

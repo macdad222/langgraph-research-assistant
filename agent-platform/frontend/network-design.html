@@ -27,7 +27,9 @@
       background: var(--bg);
     }
     .app {
+      height: 100vh;
       min-height: 100vh;
+      overflow: hidden;
       display: grid;
       grid-template-columns: minmax(0, 1fr) 420px;
       grid-template-rows: auto minmax(0, 1fr);
@@ -82,7 +84,9 @@
     .phase-step.blocked { color: var(--danger); border-color: rgba(248, 113, 113, .38); }
     .phase-summary { color: #dbeafe; font-size: 13px; line-height: 1.35; text-align: right; max-width: 360px; }
     .chat-shell {
-      min-height: 100vh;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
       background:
@@ -116,6 +120,7 @@
     .stage-copy { color: var(--muted); margin: 8px 0 0; line-height: 1.45; }
     .stage-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .stage-body { margin-top: 16px; color: #cbd5e1; }
+    .job-ref { margin-top: 8px; color: var(--muted); font-size: 11px; opacity: .6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .02em; }
     .stage-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; align-items: center; }
     .stage-actions .phase-primary { min-width: 220px; padding: 12px 16px; font-size: 14px; }
     .stage-review-host { margin-top: 16px; }
@@ -309,8 +314,9 @@
     button:disabled { opacity: .6; cursor: not-allowed; }
     .hint { color: var(--muted); font-size: 13px; }
     aside {
-      height: 100vh;
-      overflow: auto;
+      height: 100%;
+      min-height: 0;
+      overflow-y: auto;
       border-left: 1px solid var(--line);
       background: #0f172a;
       padding: 18px;
@@ -479,11 +485,13 @@
     }
     .hidden { display: none; }
     @media (max-width: 1080px) {
-      .app { grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+      .app { height: auto; min-height: 100vh; overflow: visible; grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
       .phase-rail { grid-template-columns: 1fr; }
       .phase-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .phase-summary { text-align: left; max-width: none; }
-      aside { height: auto; border-left: 0; border-top: 1px solid var(--line); }
+      .chat-shell { height: auto; min-height: 0; overflow: visible; }
+      .chat-main { overflow: visible; }
+      aside { height: auto; min-height: 0; overflow-y: visible; border-left: 0; border-top: 1px solid var(--line); }
       .starter-grid { grid-template-columns: 1fr; }
       .stage-top { flex-direction: column; }
       .stage-meta { justify-content: flex-start; }
@@ -708,6 +716,7 @@
       substatus: "Chat through the requirements and answer guided intake prompts.",
       busy: false,
       error: "",
+      jobId: "",
     };
 
     const statusEl = document.getElementById("status");
@@ -774,11 +783,77 @@
       return payload?.error || fallback;
     }
 
+    // Maps LangGraph node names (the source of truth for "what intent is running")
+    // to friendly, human-readable stage labels shown live during a run.
+    const STAGE_LABELS = {
+      // Network Design graph (app/network_design.py)
+      intake_conversation: "Reviewing intake & conversation…",
+      retrieve_standards: "Retrieving standards…",
+      curate_standards: "Curating standards…",
+      summarize_requirements: "Summarizing requirements…",
+      identify_gaps: "Identifying design gaps…",
+      build_design_package: "Building design package…",
+      build_fortigate_handoff: "Preparing FortiGate handoff…",
+      check_compliance: "Checking compliance…",
+      validate_design: "Validating design…",
+      finalize_package: "Finalizing package…",
+      // FortiGate graph (app/fortigate.py)
+      intake_request: "Reviewing FortiGate intake…",
+      parse_existing_config: "Parsing existing config…",
+      identify_missing_inputs: "Identifying missing inputs…",
+      human_clarification_checkpoint: "Waiting for your clarifications…",
+      build_logical_design: "Building logical design…",
+      build_fortigate_design: "Building FortiGate design…",
+      build_implementation_intent: "Building implementation intent…",
+      check_intent_contract: "Checking intent contract…",
+      repair_implementation_intent: "Repairing implementation intent…",
+      analyze_change_impact: "Analyzing change impact…",
+      generate_config_artifacts: "Generating config artifacts…",
+      build_interfaces_dhcp_section: "Building interfaces & DHCP…",
+      build_fortiswitch_section: "Building FortiSwitch section…",
+      build_wifi_section: "Building Wi-Fi section…",
+      build_sdwan_routing_section: "Building SD-WAN & routing…",
+      build_objects_services_section: "Building objects & services…",
+      build_firewall_policies_section: "Building firewall policies…",
+      validate_config_sections: "Validating config sections…",
+      assemble_sectional_config_artifacts: "Assembling config artifacts…",
+      build_config_model: "Building config model…",
+      render_config_artifacts: "Rendering config…",
+      recommend_input_values: "Recommending site values…",
+      input_value_review: "Waiting for site-value confirmation…",
+      validate_config: "Validating configuration…",
+      check_standards: "Checking standards compliance…",
+      risk_review: "Reviewing risk…",
+      check_cli_contract: "Checking CLI completeness…",
+      autonomous_repair_config_artifacts: "Auto-repairing config…",
+      builder_review_config_artifacts: "Builder reviewing config…",
+      refine_config_artifacts: "Refining config…",
+      frontier_model_judge: "Judging configuration…",
+      revise_after_judge: "Revising after judge…",
+      regenerate_config_after_judge: "Regenerating config after judge…",
+      human_review_checkpoint: "Waiting for your final review…",
+    };
+
+    // snake_case node name -> "Title Case…" fallback for any unmapped node.
+    function prettifyStage(node) {
+      if (!node) return "";
+      if (STAGE_LABELS[node]) return STAGE_LABELS[node];
+      return String(node).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) + "…";
+    }
+
+    // Lead with the friendly intent label from the backend job's current_stage,
+    // falling back to a generic phrase if the stage is not yet known.
+    function stageLabelForJob(job, fallback) {
+      const label = prettifyStage(job?.current_stage);
+      return label || fallback;
+    }
+
     function setUiPhase(phase, substatus = "", options = {}) {
       ui.phase = phase;
       ui.substatus = substatus || ui.substatus || "";
       ui.busy = Boolean(options.busy);
       ui.error = options.error || "";
+      if ("jobId" in options) ui.jobId = options.jobId || "";
       if (options.timer === "start") startBuildTimer();
       if (options.timer === "stop") stopBuildTimer();
       renderPhase();
@@ -852,7 +927,8 @@
     function renderStageBody() {
       const ready = Boolean(currentReadinessReport?.ready_for_package);
       if (["package", "fortigate"].includes(ui.phase)) {
-        stageBodyEl.innerHTML = `<div class="stage-note"><strong>${escapeHtml(ui.substatus || "Working...")}</strong><div class="progress-bar"><span></span></div><p class="status">Long-running model calls can take several minutes. Keep this page open; prompts will appear here when user input is needed.</p></div>`;
+        const jobRef = ui.jobId ? `<div class="job-ref" title="Background job id">job ${escapeHtml(ui.jobId)}</div>` : "";
+        stageBodyEl.innerHTML = `<div class="stage-note"><strong>${escapeHtml(ui.substatus || "Working...")}</strong><div class="progress-bar"><span></span></div>${jobRef}<p class="status">Long-running model calls can take several minutes. Keep this page open; prompts will appear here when user input is needed.</p></div>`;
         return;
       }
       if (ui.phase === "confirm" || ui.phase === "review") {
@@ -1090,8 +1166,8 @@
       rememberActiveFgJob(job);
       rawEl.textContent = JSON.stringify(job, null, 2);
       while (["queued", "running"].includes(job.status)) {
-        const label = job.status === "queued" ? "queued" : "running";
-        setUiPhase(ui.phase === "package" ? "package" : "fortigate", `FortiGate interactive job ${label}: ${job.job_id}`, { busy: true, timer: "start" });
+        const fallback = job.status === "queued" ? "Queued…" : "Building FortiGate config…";
+        setUiPhase(ui.phase === "package" ? "package" : "fortigate", stageLabelForJob(job, fallback), { busy: true, timer: "start", jobId: job.job_id });
         await sleep(3000);
         job = await fetchFgInteractiveJob(job.job_id);
         rememberActiveFgJob(job);
@@ -1148,7 +1224,7 @@
       try {
         const job = await fetchFgInteractiveJob(jobId);
         if (["queued", "running"].includes(job.status)) {
-          setUiPhase("fortigate", `FortiGate interactive job ${job.status}: ${job.job_id}`, { busy: true, timer: "start" });
+          setUiPhase("fortigate", stageLabelForJob(job, "Resuming FortiGate build…"), { busy: true, timer: "start", jobId: job.job_id });
           return;
         }
         if (["failed", "cancelled"].includes(job.status)) {
@@ -2020,8 +2096,10 @@
             thread_id: document.getElementById("thread-id").value || undefined
           },
           (job) => {
-            setUiPhase("package", `Network design job ${job.status}: ${job.job_id}`, { busy: true, timer: "start" });
-            statusEl.textContent = `Network design job ${job.status}: ${job.job_id}`;
+            const fallback = job.status === "queued" ? "Queued…" : "Building design package…";
+            const label = stageLabelForJob(job, fallback);
+            setUiPhase("package", label, { busy: true, timer: "start", jobId: job.job_id });
+            statusEl.textContent = label;
             rawEl.textContent = JSON.stringify(job, null, 2);
           }
         );

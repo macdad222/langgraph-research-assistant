@@ -109,6 +109,8 @@ class FortiGateInteractiveJobResponse(BaseModel):
     updated_at: str
     response: Optional[FortiGateInteractiveResponse] = None
     error: str = ""
+    # Latest LangGraph node name running for this job (friendly label is derived in the UI).
+    current_stage: str = ""
 
 
 class FortiGateReviewRequest(BaseModel):
@@ -173,6 +175,8 @@ class FortiGateDesignJobResponse(BaseModel):
     updated_at: str
     run_id: Optional[str] = None
     error: str = ""
+    # Latest LangGraph node name running for this job (friendly label is derived in the UI).
+    current_stage: str = ""
 
 
 class FortiGateRunResponse(BaseModel):
